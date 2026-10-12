@@ -1,0 +1,153 @@
+#Conditional Hooks
+$Application: FS2_Open
+$On Game Init: [
+	PrbLast = ""
+	PrbT0 = nil
+	PrbR0 = nil
+	PrbDone = {}
+	PrbFrames = 0
+	function PrbReal()
+		return ba.getFrametimeOverall() / 65536
+	end
+	PrbLines = {}
+	function PrbLog(s)
+		PrbLines[#PrbLines + 1] = s
+		local f = cf.openFile("probe.log", "w", "data/cache")
+		if f and f:isValid() then
+			f:write(table.concat(PrbLines, "\n") .. "\n")
+			f:close()
+		end
+	end
+	local ok, j = pcall(require, "dkjson")
+	PrbLog("dkjson=" .. tostring(ok) .. " type=" .. type(j))
+	PrbLog("loadstring=" .. type(loadstring))
+	local lf = cf.listFiles("data/cache", "*.log")
+	PrbLog("listFiles type=" .. type(lf))
+]
+$On Dialog Frame: [
+	local txt = "?"
+	if hv.Text then txt = tostring(hv.Text) end
+	local title = "?"
+	if hv.Title then title = tostring(hv.Title) end
+	local nch = -1
+	if hv.Choices then nch = #hv.Choices end
+	if not PrbDone["dlg" .. txt] then
+		PrbDone["dlg" .. txt] = true
+		PrbLog("popup title=" .. title .. " text=" .. string.sub(txt, 1, 200) .. " nchoices=" .. nch .. " state=" .. ba.getCurrentGameState().Name)
+	end
+	hv.Submit(0)
+	PrbSubmitted = true
+]
++Override: [
+	local o = PrbSubmitted == true
+	PrbSubmitted = false
+	return o
+]
+$On State Start: [
+	PrbLog("onstatestart=" .. ba.getCurrentGameState().Name)
+]
+$On Frame: [
+	PrbFrames = PrbFrames + 1
+	local st = ba.getCurrentGameState()
+	local name = "none"
+	if st and st:isValid() then name = st.Name end
+	if name ~= PrbLast then
+		PrbLog("state=" .. name .. " frame=" .. PrbFrames)
+		PrbLast = name
+	end
+	if name == "GS_STATE_INITIAL_PLAYER_SELECT" and not PrbDone.pilot then
+		PrbDone.pilot = true
+		local c = ui.PilotSelect.createPilot("ProbePilot", false)
+		PrbLog("createPilot=" .. tostring(c))
+		ui.PilotSelect.selectPilot("ProbePilot", false)
+		PrbLog("selectPilot called")
+	end
+	if name == "GS_STATE_MAIN_MENU" and not PrbDone.mm then
+		PrbDone.mm = true
+		PrbLog("mainmenu player=" .. tostring(ba.getCurrentPlayer():getName()))
+	end
+	if name == "GS_STATE_CMD_BRIEF" and not PrbDone.cmd then
+		PrbDone.cmd = true
+		local r = ba.postGameEvent(ba.GameEvents["GS_EVENT_START_BRIEFING"])
+		PrbLog("posted START_BRIEFING r=" .. tostring(r))
+	end
+	if name == "GS_STATE_BRIEFING" then
+		PrbDone.bframes = (PrbDone.bframes or 0) + 1
+		if PrbDone.bframes == 5 then
+			local r = ui.Briefing.commitToMission()
+			PrbLog("commitToMission=" .. tostring(r) .. " redalert=" .. tostring(mn.isRedAlertMission()))
+		end
+	end
+	if name == "GS_STATE_GAME_PLAY" then
+		local t = mn.getMissionTime()
+		if not PrbDone.gp then
+			PrbDone.gp = true
+			PrbLog("gameplay mission=" .. mn.getMissionFilename() .. " hvPlayer=" .. tostring(hv.Player) .. " ships=" .. #mn.Ships .. " goals=" .. #mn.Goals .. " events=" .. #mn.Events)
+			if hv.Player and hv.Player:isValid() then
+				PrbLog("player name=" .. hv.Player.Name .. " hp=" .. hv.Player.HitpointsLeft)
+			end
+			for i = 1, #mn.Events do
+				local e = mn.Events[i]
+				PrbLog("event " .. i .. " " .. e.Name)
+			end
+			for i = 1, #mn.Goals do
+				local g = mn.Goals[i]
+				PrbLog("goal " .. i .. " " .. g.Name .. " status=" .. tostring(g.isGoalSatisfied))
+			end
+		end
+		if t > 10 and not PrbDone.ctl and hv.Player and hv.Player:isValid() then
+			PrbDone.ctl = true
+			local p0 = mn.evaluateNumericSEXP("( get-object-pitch !" .. hv.Player.Name .. "! )")
+			PrbLog("pitch before=" .. tostring(p0))
+			PrbLog("setControlMode=" .. tostring(ba.setControlMode(FLIGHT_CONTROL_LUA_FULL)))
+			PrbLog("setButtonControlMode=" .. tostring(ba.setButtonControlMode(BUTTON_CONTROL_LUA_ADDITIVE)))
+			local ci = ba.getControlInfo()
+			PrbLog("button number FIRE_PRIMARY=" .. tostring(ci.getButtonControlNumber("FIRE_PRIMARY")) .. " name(0)=" .. tostring(ci.getButtonControlName(0)))
+			PrbDone.pitching = 60
+			PrbLog("weapons in flight before=" .. #mn.Weapons)
+		end
+		if PrbDone.pitching and PrbDone.pitching > 0 then
+			local ci = ba.getControlInfo()
+			ci.Pitch = 1.0
+			ci.Forward = 1.0
+			ci.useButtonControl(-1, "FIRE_PRIMARY")
+			local fired = hv.Player:firePrimary()
+			if PrbDone.pitching == 30 then PrbLog("firePrimary returned " .. tostring(fired) .. " weapons in flight=" .. #mn.Weapons) end
+			PrbDone.pitching = PrbDone.pitching - 1
+			if PrbDone.pitching == 0 then
+				local p1 = mn.evaluateNumericSEXP("( get-object-pitch !" .. hv.Player.Name .. "! )")
+				PrbLog("pitch after 60 frames of lua full control=" .. tostring(p1))
+				PrbLog("weapons in flight after=" .. #mn.Weapons)
+				PrbLog("restore control=" .. tostring(ba.setControlMode(FLIGHT_CONTROL_NORMAL)) .. " buttons=" .. tostring(ba.setButtonControlMode(BUTTON_CONTROL_NORMAL)))
+				PrbDone.ftsum = 0
+				PrbDone.ftn = 0
+			end
+		end
+		if PrbDone.ftn and PrbDone.ftn >= 0 then
+			PrbDone.ftsum = PrbDone.ftsum + ba.getMissionFrametime()
+			PrbDone.ftn = PrbDone.ftn + 1
+			if PrbDone.ftn == 30 then
+				PrbDone.ft1 = PrbDone.ftsum / 30
+				PrbLog(string.format("avg mission frametime at 1x=%.5f", PrbDone.ft1))
+				mn.runSEXP("( set-time-compression 800 )")
+				PrbDone.ftsum = 0
+			end
+			if PrbDone.ftn == 90 then
+				local ft8 = (PrbDone.ftsum / 60)
+				PrbLog(string.format("avg mission frametime after set-time-compression 800=%.5f ratio=%.2f", ft8, ft8 / PrbDone.ft1))
+				mn.runSEXP("( reset-time-compression )")
+				PrbDone.ftn = -1
+				local r = ba.postGameEvent(ba.GameEvents["GS_EVENT_PAUSE_GAME"])
+				PrbLog("posted PAUSE r=" .. tostring(r))
+			end
+		end
+	end
+	if name == "GS_STATE_GAME_PAUSED" then
+		PrbDone.pframes = (PrbDone.pframes or 0) + 1
+		if PrbDone.pframes == 30 then
+			local r = ba.postGameEvent(ba.GameEvents["GS_EVENT_PREVIOUS_STATE"])
+			PrbLog("onframe runs while paused, posted PREVIOUS_STATE r=" .. tostring(r))
+		end
+	end
+]
+#End

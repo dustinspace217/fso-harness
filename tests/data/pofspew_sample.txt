@@ -1,0 +1,84 @@
+Asteroid-BlueLarge.pof
+RAW
+Submodel detail0 total : 6948 faces
+Submodel detail1 total : 1738 faces
+Submodel detail2 total : 220 faces
+Model total 8906
+BY LOD
+
+LOD 0
+Submodel detail0 total : 6948 faces
+TOTAL: 6948
+TOTAL not counting destroyed faces 6948
+TOTAL destroyed faces 0
+
+LOD 1
+Submodel detail1 total : 1738 faces
+TOTAL: 1738
+TOTAL not counting destroyed faces 1738
+TOTAL destroyed faces 0
+
+LOD 2
+Submodel detail2 total : 220 faces
+TOTAL: 220
+TOTAL not counting destroyed faces 220
+TOTAL destroyed faces 0
+
+------------------------------------------------------------------------
+
+Asteroid-BlueMedium.pof
+RAW
+Submodel detail0 total : 5808 faces
+Submodel detail1 total : 1452 faces
+Submodel detail2 total : 144 faces
+Model total 7404
+BY LOD
+
+LOD 0
+Submodel detail0 total : 5808 faces
+TOTAL: 5808
+TOTAL not counting destroyed faces 5808
+TOTAL destroyed faces 0
+
+LOD 1
+Submodel detail1 total : 1452 faces
+TOTAL: 1452
+TOTAL not counting destroyed faces 1452
+TOTAL destroyed faces 0
+
+LOD 2
+Submodel detail2 total : 144 faces
+TOTAL: 144
+TOTAL not counting destroyed faces 144
+TOTAL destroyed faces 0
+
+------------------------------------------------------------------------
+
+Asteroid-BlueSmall.pof
+RAW
+Submodel detail0 total : 3072 faces
+Submodel detail1 total : 768 faces
+Submodel detail2 total : 76 faces
+Model total 3916
+BY LOD
+
+LOD 0
+Submodel detail0 total : 3072 faces
+TOTAL: 3072
+TOTAL not counting destroyed faces 3072
+TOTAL destroyed faces 0
+
+LOD 1
+Submodel detail1 total : 768 faces
+TOTAL: 768
+TOTAL not counting destroyed faces 768
+TOTAL destroyed faces 0
+
+LOD 2
+Submodel detail2 total : 76 faces
+TOTAL: 76
+TOTAL not counting destroyed faces 76
+TOTAL destroyed faces 0
+
+------------------------------------------------------------------------
+

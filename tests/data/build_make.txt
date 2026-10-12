@@ -1,0 +1,8 @@
+[ 50%] Building CXX object CMakeFiles/t.dir/main.cpp.o
+[100%] Linking CXX executable t
+/usr/bin/ld.bfd: CMakeFiles/t.dir/main.cpp.o: in function `main':
+main.cpp:(.text+0x5): undefined reference to `foo()'
+collect2: error: ld returned 1 exit status
+gmake[2]: *** [CMakeFiles/t.dir/build.make:101: t] Error 1
+gmake[1]: *** [CMakeFiles/Makefile2:87: CMakeFiles/t.dir/all] Error 2
+gmake: *** [Makefile:91: all] Error 2

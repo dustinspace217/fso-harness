@@ -1,0 +1,15 @@
+FreeSpace 2 Open version: 26.1.0
+WARNING! A file being indexed may be shadowed by an existing file!
+WARNING: "At least one legacy PSPEW was requested with a spawn frequency of over 60FPS. See the log for details." at weapons.cpp:5104
+WARNING: Failed to find uniform 'clipEnabled'.
+Error reading in PXO login data
+LUA ERROR: [string "fsoharness.lua"]:12: attempt to index a nil value
+Assert: "raw_position == cfile->raw_position"
+File: cfilearchive.cpp
+Line: 52
+Error: probe deliberate error
+File: base.cpp
+Line: 89
+WARNING: "zzz-shp.tbm(line 4):
+Warning: Unable to find weapon class No Such Laser in stuff_int_list!" at parselo.cpp:345
+Mission loaded: sm1-01.fs2

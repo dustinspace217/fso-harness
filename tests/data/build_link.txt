@@ -1,0 +1,8 @@
+[1/2] Building CXX object CMakeFiles/t.dir/main.cpp.o
+[2/2] Linking CXX executable t
+FAILED: [code=1] t 
+: && /usr/bin/c++  -Wl,--dependency-file=CMakeFiles/t.dir/link.d CMakeFiles/t.dir/main.cpp.o -o t   && :
+/usr/bin/ld.bfd: CMakeFiles/t.dir/main.cpp.o: in function `main':
+main.cpp:(.text+0x5): undefined reference to `foo()'
+collect2: error: ld returned 1 exit status
+ninja: build stopped: subcommand failed.

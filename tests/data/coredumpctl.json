@@ -1,0 +1,1 @@
+[{"time":1791802221462389,"pid":319606,"uid":1000,"gid":1000,"sig":6,"corefile":"missing","exe":"/opt/fso/build/bin/fs2_open_26_1_0_x64_AVX2-DEBUG","size":null},{"time":1791802266278490,"pid":321342,"uid":1000,"gid":1000,"sig":6,"corefile":"present","exe":"/opt/fso/build/bin/fs2_open_26_1_0_x64_AVX2-DEBUG","size":715986944}]

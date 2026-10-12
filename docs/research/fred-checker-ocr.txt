@@ -1,0 +1,19 @@
+{) Critical Error Mi Error Mi Warning M Potential Issue
+Error in mission event "Iota 1 Dock": Invalid ship or wing name
+(when
+(is-event-true-delay "Commence" 0 )
+( clear-goals "Iota" )
+( add-goal
+"Ghost 9"
+( ai-dock
+"Psamtik”
+"docking point”
+"bottom dock"
+Bo
+)
+}
+}
+(Bad node appears to be: "Ghost 9")
+"Fix and Save" only applies automatic corrections for simple, well-defined issues (such as missing
+loadout poo! entries). Complex errors must be addressed manually.
+1 error(s) found. Save Anyway Cancel

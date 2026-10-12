@@ -1,0 +1,16 @@
+#Conditional Hooks
+$Application: FS2_Open
+$On Game Init: [
+	FsoHarness = require("fsoharness")
+	FsoHarness.init()
+]
+$On Frame: [
+	FsoHarness.frame(false)
+]
+$On Dialog Frame: [
+	FsoHarness.frame(true)
+]
++Override: [
+	return FsoHarness.take_popup_override()
+]
+#End

@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fso-harness"
+version = "0.1.0"
+description = "Headless automation harness for FreeSpace Open, built for AI agents"
+requires-python = ">=3.12"
+license = {text = "Unlicense"}
+dependencies = []
+
+[project.scripts]
+fsoctl = "fsoctl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fsoctl*"]
+
+[tool.setuptools.package-data]
+fsoctl = ["bridge/**/*"]
+
+[tool.mutmut]
+# Mutation testing (workspace QA): mutate the package, run the unit tier.
+source_paths = ["fsoctl"]
+# Engine docs the unit tier reads as fixtures (tests/test_d_docs.py); mutmut copies only
+# source_paths and tests into mutants/ otherwise (mutmut 3.7 configuration.py: also_copy).
+also_copy = ["docs/research"]

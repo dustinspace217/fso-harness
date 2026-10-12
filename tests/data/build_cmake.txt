@@ -1,0 +1,16 @@
+[0/1] Re-running CMake...
+-- Configuring done (0.0s)
+CMake Error at CMakeLists.txt:3 (add_executable):
+  Cannot find source file:
+
+    nosuch.cpp
+
+
+CMake Error at CMakeLists.txt:3 (add_executable):
+  No SOURCES given to target: t
+
+
+CMake Generate step failed.  Build files cannot be regenerated correctly.
+FAILED: [code=1] build.ninja /w/p/build/cmake_install.cmake 
+/usr/bin/cmake --regenerate-during-build -S/w/p -B/w/p/build
+ninja: error: rebuilding 'build.ninja': subcommand failed

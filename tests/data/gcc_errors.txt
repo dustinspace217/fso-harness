@@ -1,0 +1,6 @@
+/w/code/ai/aicode.cpp:120:5: error: 'foo' was not declared in this scope
+/w/code/ai/aicode.cpp:121:9: warning: unused variable 'x' [-Wunused-variable]
+In file included from /w/code/ai/ai.h:3:
+/w/code/ship/ship.h:44:1: error: expected ';' after class definition
+/w/code/io/key.cpp:7:10: fatal error: missing.h: No such file or directory
+ninja: build stopped: subcommand failed.
