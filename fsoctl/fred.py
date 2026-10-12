@@ -273,6 +273,9 @@ _BAD_NODE = re.compile(r"\(Bad node appears to be:\s*[\"\u201c\u201d]?(.*?)[\"\u
 _DIALOG_CLOSE_SEC = 5.0
 _CHECK_TRIES = 5          # captures of the dialog before giving up on a consistent reading
 _CHECK_RETRY_SEC = 0.4    # pause between captures, so Qt can finish painting
+SAVED_CLEAN_NOTE = ("qtFRED's pre-save error check ran and found no errors, so it saved without "
+                    "showing its dialog; it does not check potential issues on save (run Tools > "
+                    "Error Checker, Shift+H, for those)")
 CHECK_NOTE = ("read by OCR from qtFRED's pre-save error check; verify against the screenshot "
               "before acting on exact names")
 
@@ -333,8 +336,12 @@ def check(sid: str) -> dict:
     screenshot, raw text."""
     r = save(sid)
     if r["saved"]:
+        # qtFRED runs the check inside save and opens the dialog only when it finds errors
+        # (qtfred/src/ui/FredView.cpp:433-440), so a save that went through IS a clean check. The
+        # old note ("saved without opening the error check") read as if no check had run.
+        # Potential-issue checks are switched off for that save (FredView.cpp:427).
         return {"clean": True, "count": 0, "entries": [], "count_matches_entries": True,
-                "screenshot": None, "raw_text": "", "note": "saved without opening the error check"}
+                "screenshot": None, "raw_text": "", "note": SAVED_CLEAN_NOTE}
     sess = session.load(sid)
     did = _dialog_id(sess)
     if not did:

@@ -28,6 +28,19 @@ _TIMEOUT = 15
 _SCROLL_MAX = 50  # wheel clicks per call; bounds the loop
 _SHOT_NAME_TRIES = 1000
 HOLD_MS_MAX = 10_000   # one key hold; longer would outlast the MCP call that asked for it
+# How long `click` holds the button. WHY hold at all: FSO's UI samples the button once per frame
+# (engine code/ui/uimouse.cpp:43-58), so a press and release inside one frame read as
+# RELEASED-after-RELEASED and the button never fires (three `xdotool click`s on the debriefing's
+# Statistics tab did nothing; a held press worked, 2026-10-12). 0.15 s spans two frames at the
+# ~16 fps seen under Xvfb load. qtFRED does not mind: Qt only starts a drag when the pointer moves.
+CLICK_HOLD_SEC = 0.15
+# A double click needs both presses inside FSO's own 250 ms window, measured at frame sampling
+# (ui/uimouse.cpp:68; the pilot list, list boxes and debriefing use it), and each hold and gap must
+# span a frame or the release folds into the next press (the up count wins, :57-58). At the
+# ~16 fps seen under Xvfb a frame is ~62 ms: 0.08 s each gives press-to-press of 2-3 frames
+# (125-190 ms), inside FSO's 250 ms. QA CR-2.
+_DOUBLE_HOLD_SEC = 0.08
+_DOUBLE_GAP_SEC = 0.08
 
 
 def parse_crop(text: str) -> tuple[int, int, int, int]:
@@ -89,7 +102,9 @@ def window_id(sess: session.Session) -> str:
 
 def _move(sess: session.Session, x: int, y: int) -> None:
     """Place the pointer at (x, y) relative to the session's main window."""
-    _x(sess, "xdotool", "mousemove", "--window", window_id(sess), str(x), str(y))
+    # "--" because xdotool reads a negative coordinate as an option ("unrecognized option
+    # '-40'", probed 2026-10-12, QA CR-4); points above or left of the window are negative.
+    _x(sess, "xdotool", "mousemove", "--window", window_id(sess), "--", str(x), str(y))
 
 
 def new_shot_path(shots: Path, prefix: str) -> Path:
@@ -112,12 +127,35 @@ def new_shot_path(shots: Path, prefix: str) -> Path:
                        "clean up old screenshots with `fsoctl cleanup`")
 
 
-def screenshot(sid: str, crop: str | None = None, scale: float | None = None) -> dict:
-    """Capture the session window to <run>/shots/shot-NNNN.png; return path, width and height."""
+def window_origin(sess: session.Session) -> list[int]:
+    """Return [x, y] of the session's main window on its display (for mapping a full shot)."""
+    out = _x(sess, "xdotool", "getwindowgeometry", "--shell", window_id(sess))
+    pos = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    try:
+        return [int(pos["X"]), int(pos["Y"])]
+    except (KeyError, ValueError) as e:
+        raise HarnessError(EXIT_NOT_FOUND, f"could not read the window position: {out[:200]!r}",
+                           "is the session still running? `fsoctl status <id>`") from e
+
+
+def screenshot(sid: str, crop: str | None = None, scale: float | None = None,
+               full: bool = False) -> dict:
+    """Capture the session window to <run>/shots/shot-NNNN.png; return path, width and height.
+
+    full=True captures the whole virtual display instead and adds window_origin ([x, y] of the
+    main window, in display coordinates). Click coordinates stay relative to the main window. To
+    click a point seen in a full shot: divide by `scale` if one was given, add the crop's X/Y if
+    one was given (with full=True, crop is in display coordinates), then subtract window_origin
+    (QA XFA-2/XFK-5).
+    WHY a separate flag: `import -window <id>` reads only that window's pixels, so Qt popup menus
+    (separate override-redirect windows) come out black and qtFRED's dialogs are missing. The
+    default stays the main window so existing crops and the game's own shots keep their size.
+    """
     sess = launcher.require_running(sid)
     shots = session.run_dir(sess) / "shots"
     shots.mkdir(exist_ok=True)
-    args = ["import", "-window", window_id(sess)]
+    origin = window_origin(sess) if full else None
+    args = ["import", "-window", "root" if full else window_id(sess)]
     if crop:
         w, h, x, y = parse_crop(crop)
         args += ["-crop", f"{w}x{h}+{x}+{y}", "+repage"]
@@ -130,7 +168,10 @@ def screenshot(sid: str, crop: str | None = None, scale: float | None = None) ->
         path.unlink(missing_ok=True)   # drop the empty placeholder new_shot_path created
         raise
     size = _x(sess, "identify", "-format", "%w %h", str(path)).split()
-    return {"path": str(path), "width": int(size[0]), "height": int(size[1])}
+    out = {"path": str(path), "width": int(size[0]), "height": int(size[1])}
+    if origin is not None:
+        out["window_origin"] = origin
+    return out
 
 
 def _focus(sess: session.Session) -> None:
@@ -161,12 +202,37 @@ def keys(sid: str, names: list[str], hold_ms: int = 0) -> dict:
     return {"pressed": names}
 
 
+def _presses(sess: session.Session, button: str, count: int, hold: float, gap: float) -> None:
+    """Press and release `button` `count` times, each held `hold` s, `gap` s apart.
+
+    One xdotool process runs the whole sequence (its own `sleep` steps), so the timing is not
+    stretched by starting a process per step, which matters for FSO's 250 ms double-click
+    window. If the call is interrupted the button is released: a button left down would turn
+    every later click into a drag (cross-family XK-5, same pattern as drag()).
+    """
+    steps: list[str] = []
+    for i in range(count):            # count is 1 or 2
+        if i:
+            steps += ["sleep", f"{gap:g}"]
+        steps += ["mousedown", button, "sleep", f"{hold:g}", "mouseup", button]
+    try:
+        _x(sess, "xdotool", *steps)
+    except BaseException:
+        _release(sess, "xdotool", "mouseup", button)
+        raise
+
+
 def click(sid: str, x: int, y: int, button: int = 1, double: bool = False) -> dict:
-    """Move to (x, y) and click; coordinates are window coordinates (window at 0,0)."""
+    """Move to (x, y) and click with a held press; coordinates are window coordinates.
+
+    double=True makes two shorter held presses sized for FSO's 250 ms double-click window.
+    """
     sess = launcher.require_running(sid)
-    extra = ["--repeat", "2"] if double else []
     _move(sess, x, y)
-    _x(sess, "xdotool", "click", *extra, str(button))
+    if double:
+        _presses(sess, str(button), 2, _DOUBLE_HOLD_SEC, _DOUBLE_GAP_SEC)
+    else:
+        _presses(sess, str(button), 1, CLICK_HOLD_SEC, 0)
     record.append(sess, "click", {"x": x, "y": y, "button": button, "double": double})
     return {"clicked": [x, y]}
 
@@ -192,6 +258,27 @@ def drag(sid: str, start: tuple[int, int], end: tuple[int, int], button: int = 1
     _x(sess, "xdotool", "mouseup", str(button))
     record.append(sess, "drag", {"from": [x1, y1], "to": [x2, y2], "button": button})
     return {"dragged": [[x1, y1], [x2, y2]]}
+
+
+def move(sid: str, x: int, y: int) -> dict:
+    """Move the pointer to (x, y) in window coordinates without pressing anything.
+
+    Returns the requested point and "pointer": where the pointer really is, in display
+    coordinates (window_origin + (x, y) when the window is on screen), read back with
+    `xdotool getmouselocation`. WHY a separate verb: hovering (tooltips, highlighted buttons,
+    UI that reacts to a resting pointer) had no tool; click and drag always press.
+    """
+    sess = launcher.require_running(sid)
+    _move(sess, x, y)
+    out = _x(sess, "xdotool", "getmouselocation", "--shell")
+    pos = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+    try:
+        pointer = [int(pos["X"]), int(pos["Y"])]
+    except (KeyError, ValueError) as e:
+        raise HarnessError(EXIT_NOT_FOUND, f"could not read the pointer position: {out[:200]!r}",
+                           "is the session still running? `fsoctl status <id>`") from e
+    record.append(sess, "move", {"x": x, "y": y})
+    return {"moved": [x, y], "pointer": pointer}
 
 
 def focus_neutral(sess: session.Session, x: int, y: int) -> None:
@@ -221,12 +308,14 @@ def _cfg_shot(p: argparse.ArgumentParser) -> None:
     p.add_argument("id")
     p.add_argument("--crop", help="WxH+X+Y")
     p.add_argument("--scale", type=float, help="0.05-1.0")
+    p.add_argument("--full", action="store_true",
+                   help="whole display (menus, dialogs); adds window_origin")
 
 
 @register("screenshot", "save a PNG of the session window", _cfg_shot)
 def _cli_screenshot(args: argparse.Namespace) -> dict:
     """CLI wrapper for screenshot()."""
-    return screenshot(args.id, args.crop, args.scale)
+    return screenshot(args.id, args.crop, args.scale, args.full)
 
 
 def _cfg_keys(p: argparse.ArgumentParser) -> None:
@@ -255,6 +344,19 @@ def _cfg_click(p: argparse.ArgumentParser) -> None:
 def _cli_click(args: argparse.Namespace) -> dict:
     """CLI wrapper for click()."""
     return click(args.id, args.x, args.y, args.button, args.double)
+
+
+def _cfg_move(p: argparse.ArgumentParser) -> None:
+    """Add the `move` verb's arguments."""
+    p.add_argument("id")
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+
+
+@register("move", "move the pointer to window coordinates (no click)", _cfg_move)
+def _cli_move(args: argparse.Namespace) -> dict:
+    """CLI wrapper for move()."""
+    return move(args.id, args.x, args.y)
 
 
 def _cfg_drag(p: argparse.ArgumentParser) -> None:

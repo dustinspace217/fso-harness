@@ -40,8 +40,10 @@ importlib.import_module("fsoctl.errors")
 
 DEFAULT_TIMEOUT = 90
 # Time fsoctl gets to clean up after SIGTERM before SIGKILL. Must cover a stop of the session
-# it started: up to 20 s polite stop, 10 s kill wait, then status polls (QA SL2-1).
-TERM_GRACE_SEC = 45
+# it started: up to 25 s for the runner (launcher._RUNNER_EXIT_WAIT), then the scope's 20 s
+# polite stop and 10 s kill wait, then status polls (QA SL2-1; raised for runner-first stop,
+# QA CR-1/SL-2/TA-4). tests/mcp_check.py checks the sum.
+TERM_GRACE_SEC = 75
 INLINE_IMAGE_MAX_BYTES = 16 * 1024 * 1024
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -163,10 +165,11 @@ for _name, _heading in PROMPTS.items():
 # ---- sessions --------------------------------------------------------------------------------
 
 # Seconds a launch can spend BEFORE its readiness wait starts, plus a stop on failure: the
-# launch.lock wait (60 s), the bridge.lock wait (60 s), the scope start (10 s) and a stop (~30 s).
+# launch.lock wait (60 s), the bridge.lock wait (60 s), the scope start (10 s) and a stop (~55 s:
+# runner wait 25 s + scope stop 20 s + kill wait 10 s).
 # Keep in step with launcher._LOCK_WAIT and bridge_install._LOCK_WAIT (tests/mcp_check.py
 # checks the sum). With a smaller margin a slow but healthy launch was cancelled by SIGTERM.
-LAUNCH_EXTRA_SEC = 60 + 60 + 10 + 30 + 40
+LAUNCH_EXTRA_SEC = 60 + 60 + 10 + 55 + 40
 
 
 @mcp.tool()
@@ -237,9 +240,16 @@ def cleanup(older_than: float = 600) -> str:
 # ---- observing -------------------------------------------------------------------------------
 
 @mcp.tool()
-def screenshot(id: str, crop: str | None = None, scale: float | None = None) -> list:
-    """Screenshot the session window; returns the image and its path/size. crop: WxH+X+Y."""
-    text = _ctl("screenshot", *_opt("crop", crop), *_opt("scale", scale), *_pos(id))
+def screenshot(id: str, crop: str | None = None, scale: float | None = None,
+               full: bool = False) -> list:
+    """Screenshot the session window; returns the image and its path/size. crop: WxH+X+Y.
+
+    full=True shows the whole display, including qtFRED dialogs and open menus, and returns
+    window_origin. With full=True, crop is in display coordinates. To click a point in the image:
+    divide by scale (if given), add the crop's X/Y (if given), subtract window_origin.
+    """
+    text = _ctl("screenshot", *_opt("crop", crop), *_opt("scale", scale), *_opt("full", full),
+                *_pos(id))
     result: list = [text]
     try:
         path = Path(json.loads(text)["path"])
@@ -340,6 +350,13 @@ def keys(id: str, keys: list[str], hold_ms: int = 0) -> str:
 def click(id: str, x: int, y: int, button: int = 1, double: bool = False) -> str:
     """Click at window coordinates."""
     return _ctl("click", f"--button={button}", *_opt("double", double), *_pos(id, x, y))
+
+
+@mcp.tool()
+def move(id: str, x: int, y: int) -> str:
+    """Move the pointer to window coordinates without clicking (hover). Returns where the
+    pointer really is, in display coordinates."""
+    return _ctl("move", *_pos(id, x, y))
 
 
 @mcp.tool()

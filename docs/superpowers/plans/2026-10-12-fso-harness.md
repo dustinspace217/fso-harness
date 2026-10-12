@@ -1,13 +1,14 @@
 # FSO Harness Implementation Plan
 
-## Status (updated 2026-10-12, QA close)
-Phase: Task 23 of 23 (QA closing)
-Done: Tasks 1-22; docs; HIGH-RISK QA rounds 1+2 (5 Claude review seats + two external-model seats, 164 finding IDs, all
-dispositioned, manifest OK); two fix waves merged; all tiers green (511+ unit, 48 engine, 5 qtFRED,
-1 Vulkan, Lua tier); mutation 4577/8939; deferments DEF-QA-01..06 below
-Next: Dustin: accept DEF-QA-01/02, then publish decisions (repo, upstream issue, MCP registration)
+## Status (updated 2026-10-12, demo-findings fix wave)
+Phase: post-v1 maintenance (v1 Tasks 1-23 done and published)
+Done: v1; SM1-01 demo findings fixed on branch fix/demo-findings (a8af1df): held click, runner-first
+stop (no core on `stop`; runtime-limit expiry still aborted until the QA fix wave), qtFRED
+SDL_NO_SIGNAL_HANDLERS, screenshot full, new `move`, fred_check note; QA Phase A+B done (26 IDs)
+Next: QA fix wave + Phase C manifest + cross-family pass, then Dustin's re-run of the demo;
+after that the agreed input work: named-action input, relative mouse, keyboard/F-key check (joystick OUT,
+Dustin 2026-10-12)
 Blocked: nothing
-
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -3496,3 +3497,24 @@ QA record: kept outside this repository. Decided at commit bf9fa76 (build/v1). D
 | DEF-QA-04 | TA-7 residual | LOW | no engine test crashes the engine through a test mod (spec §10 "deliberate crash") | crash_report's backtrace and core polling are unit-tested; the existing engine test kills the engine from outside | add a scratch-mod table or Lua that calls ba.error / an Error() path and assert crash_report's popup text and backtrace | revisit when crash_report changes | — |
 | DEF-QA-05 | MU-4, MU-6, MU-8, MU2-5 | LOW | surviving mutants: argparse configuration (~339), message/hint text, timing constants, and the remaining logic survivors listed in MU2-mutation.md | safety-relevant survivors were read by hand and the real gaps killed; the rest change wording, help text or bounds already pinned by engine tests | per-verb parse-table tests; message/hint asserts across all modules | next mutation run (`mutmut run`, also_copy docs/research) | — |
 | DEF-QA-06 | SA2-5 | LOW | the persistent audit log has no size cap (a lua call stores the full code, up to the 128 KiB argv limit, twice) | single-user tool; the log is the opt-in's only record and must not drop entries silently | rotate at a size with a marker line, or store a hash plus the first N bytes | `du -h ~/.local/state/fso-harness/audit.log`; revisit past 50 MB | — |
+
+## Post-v1: SM1-01 demo findings fix wave (2026-10-12, commit a8af1df)
+Asked by Dustin ("fix the harness issues you noted and get ready for a re-run"), list = demo README
+section 5 items 1-5, plus his mid-turn ask for pointer control ("a way to control the mouse").
+Deviations from that list, each with its reason:
+- **Added: `move` verb** (scope-change, asked mid-turn): click/drag/scroll existed, hover did not.
+- **Added: qtFRED SDL_NO_SIGNAL_HANDLERS** (behavioral-change, found by the fix): with the runner-first
+  stop qtFRED ignored SIGTERM for 20 s and ended in SIGKILL; root cause SDL's own SIGTERM handler.
+- **Finding 4 reclassified** (other): fred_check's clean result was real evidence all along (qtFRED's
+  save runs the check); only the note was wrong, plus potential issues are not covered on save.
+- **Finding 2 root cause** (other): not a coordinate problem; sub-frame clicks (ui/uimouse.cpp:43-58).
+Effect on functionality: every click is 0.15 s longer; every stop now takes about 2 s (game) instead of
+aborting; qtFRED stops end on SIGTERM. Joystick input: OUT by Dustin's ruling (hardware-compat, not mods).
+
+
+## Appendix: Deferments originated in the demo-findings QA (HIGH-RISK, 2026-10-12)
+| ID | Found by | Severity | What was deferred | Why deferred | Fix direction | Detection / revisit | Obsolete when |
+|---|---|---|---|---|---|---|---|
+| DEF-DF-01 | SL-5 | LOW | stop never executed in gameplay, mid-load, with a popup open, on Vulkan, on a debug build, or with a runner stuck past 25 s | the main-hall and qtFRED cells pass, and the runtime-limit cell now has an engine test; each other cell is its own engine scenario | engine tests that stop in each state and assert exit_info.signal is None | `coredumpctl list` after agent loops; revisit on any core whose backtrace shows _XIOError | — |
+| DEF-DF-02 | CR-2 residual | LOW | `click double=true` is not engine-verified on an FSO double-click target (pilot list) | a pilot list needs an existing pilot without auto-select; the harness has no such launch mode | add a launch mode that copies a pilot but stays in the chooser, then double-click it and assert GS_STATE_MAIN_MENU | revisit when a test needs FSO double-click | — |
+| DEF-DF-03 | MU-6 | LOW | surviving mutants in pre-existing branches of the touched functions (screenshot crop/scale argv, stop's missing-session paths, record._issue's other verbs, fred.check's OCR path) | not introduced by this change; same class as DEF-QA-05 | argv asserts per option; per-verb replay tests; OCR path unit tests with captured text | next full mutation run | — |

@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -33,6 +34,13 @@ _HARNESS_ONLY_ARGS = ("-portable_mode", "-mod", "-start_mission", "-pilot")
 _OUTPUT_ARGS = ("-output_", "-profile_write_file", "-get_flags", "-controlconfig_tbl")
 _SIDE_FOLDERS = ("shadows", "fred-missions")
 _SIDE_MIN_AGE = 3600.0   # side folders are never removed younger than this (cleanup, R4)
+# How long stop() waits for the runner to finish after asking it to: the runner gives the engine
+# up to runner._REAP_TIMEOUT (20 s) to quit, then ends Xvfb; 5 s on top for that and its record.
+_RUNNER_EXIT_WAIT = 25.0
+# Seconds between the runner's own deadline (runtime_sec) and the scope's RuntimeMaxSec: covers
+# the runner's worst-case reap (20 s polite + 20 s after SIGKILL) and ending Xvfb.
+RUNTIME_BACKSTOP_SEC = 60
+_RUNNER_POLL = 0.1
 _SIDE_NAME = re.compile(r"^[0-9a-f]{8}$")   # token_hex(4), how fred/docs/frame_stats name them
 _SWITCH_NAMES = ("skip_movies", "pilot_mode", "pilot_name", "dismiss_popups",
                  "skip_command_briefing", "skip_briefing", "noninteractive")
@@ -237,6 +245,10 @@ def _validate(req: LaunchRequest) -> None:
     _check_binary(req.binary)
     _check_folders(req)
     _check_extra_args(req)
+    if not isinstance(req.runtime_sec, int) or req.runtime_sec < 1:
+        # Every session runs under a hard runtime cap; 0 was never "unlimited" (QA XFK-2).
+        raise HarnessError(EXIT_USAGE, f"runtime {req.runtime_sec!r} is not a positive number of "
+                           "seconds", "pass --runtime N with N >= 1 (default 1800)")
     if req.pilot_mode == "existing" and not req.pilot_source:
         raise HarnessError(EXIT_USAGE, f"pilot existing:{req.pilot_name} needs a pilot source",
                            "pass --pilot-source <data/players folder>: each session starts with "
@@ -357,7 +369,9 @@ def _start(req: LaunchRequest) -> tuple[session.Session, bool]:
     "starting" session counts toward the cap only once its scope is active, so the next launch
     must not look before this one's scope exists.
     """
-    props = scope.caps(runtime_sec=req.runtime_sec)
+    # The runner ends the run itself at runtime_sec (engine first, Xvfb last); RuntimeMaxSec is
+    # the backstop for a runner that cannot, RUNTIME_BACKSTOP_SEC later (QA SL-1).
+    props = scope.caps(runtime_sec=req.runtime_sec + RUNTIME_BACKSTOP_SEC)
     memory_max = next((p.split("=", 1)[1] for p in props if p.startswith("MemoryMax=")), None)
     with session.file_lock(paths.runtime_root() / "launch.lock", _LOCK_WAIT):
         check_capacity()
@@ -517,14 +531,77 @@ def _stop_scope_only(sid: str, not_found: HarnessError) -> dict:
         raise not_found
     scope.stop(unit)
     return {"id": sid, "status": "stopped", "exit_info": None,
+            "runner_first": "skipped:run folder already removed",
             "note": "its run folder had already been removed"}
+
+
+def _cgroup_has_scope(cgroup_text: str, unit: str) -> bool:
+    """True when /proc/<pid>/cgroup text places the process in `<unit>.scope` (exact name)."""
+    return any(line.rsplit("/", 1)[-1] == f"{unit}.scope" for line in cgroup_text.splitlines())
+
+
+def _in_scope(pid: int, unit: str) -> bool:
+    """True when process `pid` exists and lives in the session's scope.
+
+    WHY check: runner_pid is a stored number; after the session ended it may belong to an
+    unrelated process, which must never be signalled.
+    """
+    try:
+        return _cgroup_has_scope(Path(f"/proc/{pid}/cgroup").read_text(), unit)
+    except OSError:
+        return False
+
+
+def _gone(pid: int) -> bool:
+    """True when `pid` no longer runs (absent, or a zombie waiting for its parent to reap it)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return stat.rsplit(")", 1)[-1].split()[0] == "Z"   # field 3; the name in () may hold spaces
+
+
+def _stop_runner_first(sess: session.Session) -> str:
+    """SIGTERM the session's runner and wait (at most _RUNNER_EXIT_WAIT s) for it to exit.
+
+    WHY: `systemctl stop` on the scope SIGTERMs Xvfb at the same moment as the engine. The engine
+    then hit an X I/O error mid-frame, Xlib called exit(), and exit-time teardown aborted: every
+    stop left a SIGABRT and a 12-34 MB core dump (2026-10-12; backtrace _XIOError -> exit ->
+    nvgDeleteTexture -> free). The runner already ends things in the right order (it passes the
+    stop to the engine, waits for it, and ends Xvfb last), so it is asked first; the scope stop
+    that follows is the backstop for a runner that is gone, hung, or not ours.
+    Returns what happened, for stop()'s result (QA CR-5/SL-4: the fallback must not be silent):
+    "ok", "timeout", or "skipped:<why>". Any failure here leaves the scope stop to do the work.
+    """
+    pid = sess.runner_pid
+    if not pid:
+        return "skipped:no runner recorded"
+    if not _in_scope(pid, sess.scope):
+        return "skipped:runner not running in the session's scope"
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as e:     # gone in the meantime, or not ours to signal: the backstop handles it
+        return f"skipped:{e.strerror or e}"
+    deadline = time.monotonic() + _RUNNER_EXIT_WAIT
+    # Bounded by the deadline. The scope check too: a pid reused outside the scope is not our
+    # runner, so there is nothing more to wait for (QA CR-7).
+    while time.monotonic() < deadline:
+        if _gone(pid) or not _in_scope(pid, sess.scope):
+            return "ok"
+        time.sleep(_RUNNER_POLL)
+    sys.stderr.write(f"fsoctl: the runner of {sess.id} did not exit within "
+                     f"{_RUNNER_EXIT_WAIT:.0f} s; stopping the scope (the engine may abort and "
+                     "leave a core dump)\n")
+    return "timeout"
 
 
 def stop(sid: str) -> dict:
     """Stop a session's scope (idempotent) and mark it stopped; keep the run folder.
 
     Creates the stop marker first, so the runner (which gets SIGTERM from this stop) records
-    ended_by "stop". A session that already ended keeps its status and exit_info. The run
+    ended_by "stop". The runner is asked first and the scope stopped after it (see
+    _stop_runner_first: stopping the scope alone took Xvfb away under a running engine).
+    A session that already ended keeps its status and exit_info. The run
     folder can vanish at any point (a concurrent cleanup, QA YK-3); the scope is stopped anyway.
     """
     try:
@@ -537,7 +614,8 @@ def stop(sid: str) -> dict:
     except FileNotFoundError:
         return _stop_scope_only(sid, HarnessError(EXIT_NOT_FOUND, f"no session {sid}",
                                                   "use `fsoctl list`"))
-    scope.stop(sess.scope)
+    runner_first = _stop_runner_first(sess)
+    scope.stop(sess.scope)   # backstop: ends whatever is left (or everything, if the runner hung)
 
     def apply(s: session.Session) -> None:
         if s.status in ("starting", "running"):
@@ -549,9 +627,10 @@ def stop(sid: str) -> dict:
     except (HarnessError, OSError) as e:
         if isinstance(e, HarnessError) and e.code != EXIT_NOT_FOUND:
             raise
-        return {"id": sid, "status": "stopped", "exit_info": None,
+        return {"id": sid, "status": "stopped", "exit_info": None, "runner_first": runner_first,
                 "note": "its run folder was removed while it was being stopped"}
-    return {"id": sid, "status": sess.status, "exit_info": sess.exit_info}
+    return {"id": sid, "status": sess.status, "exit_info": sess.exit_info,
+            "runner_first": runner_first}
 
 
 def list_all() -> dict:

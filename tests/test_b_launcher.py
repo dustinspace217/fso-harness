@@ -7,12 +7,14 @@ NOT stubbed in the capacity tests (QA TA-2: stubbing it hid starting sessions).
 import fcntl
 import os
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from fsoctl import channel, cli, launcher, paths, scope, session
+from fsoctl import channel, cli, launcher, paths, runner, scope, session
 from fsoctl.errors import (EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT, EXIT_USAGE,
                            HarnessError)
 from fsoctl.launcher import LaunchRequest
@@ -183,7 +185,7 @@ def test_stop_marks_the_stop_for_the_runner(tmp_runtime, scopes):
     s = _mk(status="running")
     scopes.states[s.scope] = "active"
     r = launcher.stop(s.id)
-    assert r["status"] == "stopped"
+    assert r["status"] == "stopped" and r["runner_first"] == "skipped:no runner recorded"
     assert (session.run_dir(s) / session.STOP_MARKER).exists()
     assert session.load(s.id).ended_by == "stop"
     assert scopes.stopped == [s.scope]
@@ -496,3 +498,180 @@ def test_stop_reports_a_folder_removed_after_the_scope_stopped(tmp_runtime, scop
 def test_cli_cleanup_defaults_to_ten_minutes():
     # YK-5: `fsoctl cleanup` with no flag deleted a just-failed session's logs at once.
     assert cli.build_parser().parse_args(["cleanup"]).older_than == 600
+
+
+# ---- runner-first stop (SM1-01 demo finding 3, 2026-10-12) -----------------------------------
+# A scope stop SIGTERMs Xvfb at the same moment as the engine; the engine then hit an X I/O
+# error mid-frame, Xlib called exit(), and exit-time teardown aborted (SIGABRT and a core dump on
+# every stop). The runner already reaps the engine before it ends Xvfb, so stop() asks it first.
+
+def _set_runner(s, pid):
+    session.update(s.id, lambda x: setattr(x, "runner_pid", pid))
+
+
+_SLOW_RUNNER = ("import signal, sys, time\n"
+                "def bye(n, f):\n    time.sleep(0.5)\n    sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM, bye)\nprint('ready', flush=True)\ntime.sleep(30)\n")
+
+
+def test_stop_ends_the_runner_before_stopping_the_scope(tmp_runtime, scopes, monkeypatch):
+    # The stand-in runner takes 0.5 s to exit after SIGTERM (like a real one reaping its engine):
+    # the scope stop must wait for it, and must not wait the whole 25 s either (QA TA-2, MU-5).
+    proc = subprocess.Popen([sys.executable, "-c", _SLOW_RUNNER], stdout=subprocess.PIPE,
+                            text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        s = _mk(status="running")
+        _set_runner(s, proc.pid)
+        scopes.states[s.scope] = "active"
+        asked = []
+
+        def in_scope(pid, unit):
+            asked.append(unit)
+            return pid == proc.pid and proc.poll() is None
+        monkeypatch.setattr(launcher, "_in_scope", in_scope)
+        seen = []
+
+        def stop(unit, timeout=20):
+            seen.append(proc.poll())          # the runner must already be gone here
+            scopes.states[unit] = "inactive"
+        monkeypatch.setattr(scope, "stop", stop)
+        t0 = time.monotonic()
+        r = launcher.stop(s.id)
+        assert time.monotonic() - t0 < 5
+        assert seen == [0] and r["runner_first"] == "ok"
+        assert set(asked) == {s.scope}
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_stop_leaves_a_pid_outside_the_scope_alone(tmp_runtime, scopes):
+    # runner_pid is stored; after a reboot or a long gap the number can belong to anyone.
+    proc = subprocess.Popen(["sleep", "30"])
+    try:
+        s = _mk(status="running")
+        _set_runner(s, proc.pid)              # real _in_scope: this sleep is not in the scope
+        scopes.states[s.scope] = "active"
+        r = launcher.stop(s.id)
+        assert proc.poll() is None and scopes.stopped == [s.scope]
+        assert r["runner_first"].startswith("skipped:")
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_stop_waits_a_bounded_time_for_a_runner_that_ignores_sigterm(tmp_runtime, scopes,
+                                                                       monkeypatch, capsys):
+    code = ("import signal, sys, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('ready', flush=True)\ntime.sleep(30)\n")
+    proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
+    try:
+        assert proc.stdout.readline().strip() == "ready"
+        s = _mk(status="running")
+        _set_runner(s, proc.pid)
+        scopes.states[s.scope] = "active"
+        monkeypatch.setattr(launcher, "_in_scope", lambda pid, unit: True)
+        monkeypatch.setattr(launcher, "_RUNNER_EXIT_WAIT", 0.3)
+        t0 = time.monotonic()
+        r = launcher.stop(s.id)
+        assert time.monotonic() - t0 < 5 and scopes.stopped == [s.scope]   # backstop still ran
+        assert r["runner_first"] == "timeout"     # the fallback is reported (QA CR-5/SL-4)
+        err = capsys.readouterr().err
+        assert "did not exit within" in err and "leave a core dump" in err
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("0::/user.slice/app.slice/fso-harness-sab12.scope\n", True),
+    ("0::/user.slice/app.slice/fso-harness-sab123.scope\n", False),
+    ("0::/user.slice/user-1000.slice/session-2.scope\n", False),
+])
+def test_cgroup_scope_match_is_exact(text, expected):
+    assert launcher._cgroup_has_scope(text, "fso-harness-sab12") is expected
+
+
+
+def test_stop_survives_a_runner_it_may_not_signal(tmp_runtime, scopes, monkeypatch):
+    # QA TA-3: os.kill raising PermissionError must not keep the scope from being stopped.
+    s = _mk(status="running")
+    _set_runner(s, 4242)
+    scopes.states[s.scope] = "active"
+    monkeypatch.setattr(launcher, "_in_scope", lambda pid, unit: True)
+
+    def deny(pid, sig):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(launcher.os, "kill", deny)
+    r = launcher.stop(s.id)
+    assert scopes.stopped == [s.scope] and r["status"] == "stopped"
+    assert r["runner_first"] == "skipped:Operation not permitted"
+
+
+@pytest.mark.parametrize("stat_text, gone", [
+    ("123 (fs2 open) S 1 2 3", False),
+    ("123 (a) Z (b) R 1 2 3", False),     # the name itself contains ") Z (": field 3 is R
+    ("123 (sleep) Z 1 2 3", True),
+])
+def test_gone_reads_the_state_after_the_last_paren(tmp_path, monkeypatch, stat_text, gone):
+    proc_dir = tmp_path / "123"
+    proc_dir.mkdir()
+    (proc_dir / "stat").write_text(stat_text)
+    real_path = launcher.Path
+    monkeypatch.setattr(launcher, "Path",
+                        lambda p: real_path(str(p).replace("/proc", str(tmp_path), 1)))
+    assert launcher._gone(123) is gone
+
+
+def test_gone_and_in_scope_on_a_pid_that_does_not_exist():
+    # QA MU-2/MU-4: a missing pid is gone, and never "in scope" (it must not be signalled).
+    missing = 2 ** 22 + 7          # above the kernel's pid_max ceiling (4194304)
+    assert launcher._gone(missing) is True
+    assert launcher._in_scope(missing, "fso-harness-sab12") is False
+
+
+def test_in_scope_matches_this_process_in_its_own_scope():
+    # QA MU-4: the positive path, on whatever cgroup this test runs in.
+    last = Path("/proc/self/cgroup").read_text().splitlines()[-1].rsplit("/", 1)[-1]
+    if not last.endswith(".scope"):
+        pytest.skip(f"this test is not running inside a scope ({last})")
+    assert launcher._in_scope(os.getpid(), last.removesuffix(".scope")) is True
+
+
+def test_stop_timings_cover_the_runner_and_the_runtime_backstop():
+    # QA TA-4/SL-2: the stop waits long enough for a polite reap; the scope's RuntimeMaxSec
+    # backstop is later than the runner's worst-case reap (20 s polite + 20 s after SIGKILL).
+    assert launcher._RUNNER_EXIT_WAIT > runner._REAP_TIMEOUT
+    assert launcher.RUNTIME_BACKSTOP_SEC > 2 * runner._REAP_TIMEOUT
+
+
+def test_stop_stops_waiting_when_the_pid_leaves_the_scope(tmp_runtime, scopes, monkeypatch):
+    # QA CR-7: once the pid no longer names a process in the scope (reaped and reused), the
+    # runner is gone as far as stop is concerned; waiting out the full deadline would be wrong.
+    s = _mk(status="running")
+    _set_runner(s, 4242)
+    scopes.states[s.scope] = "active"
+    answers = iter([True])           # in scope when checked before the signal, then not
+    monkeypatch.setattr(launcher, "_in_scope", lambda pid, unit: next(answers, False))
+    monkeypatch.setattr(launcher, "_gone", lambda pid: False)     # the pid is alive (reused)
+    monkeypatch.setattr(launcher.os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(launcher, "_RUNNER_EXIT_WAIT", 0.5)
+    assert launcher.stop(s.id)["runner_first"] == "ok"
+
+
+@pytest.mark.parametrize("runtime", [0, -5])
+def test_launch_refuses_a_runtime_below_one_second(tmp_runtime, fs2, scopes, runtime):
+    # QA XFK-2: every session keeps a hard runtime cap; 0 was never "unlimited".
+    e = _raises(EXIT_USAGE, launcher.launch, LaunchRequest(binary="/bin/true", runtime_sec=runtime))
+    assert "runtime" in e.message
+    assert session.list_sessions() == []
+
+
+def test_stop_without_a_session_folder_reports_runner_first(tmp_runtime, scopes):
+    # QA XFK-4: the degraded paths carry the same key as the normal one.
+    s = _mk(status="running")
+    scopes.states[s.scope] = "active"
+    shutil.rmtree(session.run_dir(s))
+    assert launcher.stop(s.id)["runner_first"].startswith("skipped:")
+

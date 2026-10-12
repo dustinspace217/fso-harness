@@ -56,6 +56,9 @@ change mission state while the AI plays.
      a wing, fail or complete a goal) without editing the mission.
 6. Reach past sexps with `lua`: the full scripting API of this build is in `api_docs`
    (`scripting.lua`). `mn.Ships["Alpha 1"]`, `mn.Events`, `mn.Goals` cover most reads.
+   Longer scripts can live in files: `local f, e = loadfile("/abs/path/script.lua")` then
+   `pcall(f)`. A chunk loaded that way sees the engine's own `error()` (fatal), not the harness's
+   harmless one, so it must not call `error()`.
 7. `wait_for` kind `event_true` / `goal` / `destroyed` to pin the moments that matter, with
    `state` at each one; `screenshot` only where a picture adds something.
 8. `log` for warnings the mission raised; `stop`.
@@ -69,6 +72,11 @@ runs the same scenario on two builds side by side (write the steps as a scenario
 2. Either `autopilot on` and watch (`time` compression 400 speeds it up), or fly with `pilot`:
    short calls (1-3 mission seconds), `state` in between to see where things are.
 3. `wait_for` `event_true` / `destroyed` / `goal` to know when something happened.
+4. For a pilot that decides every frame (aiming, dogfighting), install your own controller from
+   `lua`: `engine.addHook("On Frame", fn)`, where fn calls `ba.setControlMode(FLIGHT_CONTROL_LUA_FULL)`,
+   writes `ba.getControlInfo()` axes (+Heading = nose right, +Pitch = nose down) and fires with
+   `ship:firePrimary()` / `fireSecondary()`. Wrap fn's body in `pcall` and give control back
+   (`FLIGHT_CONTROL_NORMAL`) on error: an error escaping a hook ends the session.
 
 ## Read a crash
 
@@ -82,7 +90,13 @@ log lines and the problems in the whole log, the popups that came up, the last h
 - In FSO Lua, the global `error()` ends the game. In `lua` commands the harness swaps it for a
   harmless one; avoid reading fields a handle does not have (that is a fatal engine error).
 - qtFRED windows: `fred_*` tools handle focus and geometry; raw `click` coordinates are relative
-  to the editor window (1280x720 by default).
+  to the editor window (1280x720 by default). Dialogs and open menus are separate windows that a
+  plain `screenshot` does not show: use `screenshot full=true`. To click a point seen in it:
+  divide by `scale` (if you gave one), add the crop's X/Y (with `full`, crop is in display
+  coordinates), then subtract the returned `window_origin`.
+- `click` holds the button for 0.15 s: FSO's own menus ignore a press and release that fall
+  inside one frame. `move` puts the pointer somewhere without clicking (hover) and reports where
+  it really is.
 - `wait_for` event/ship names must exist in the mission, and may not contain `"` `!` `(` `)`:
   in FSO's sexp text `"` ends a string, so such a name could smuggle in code. Sexps are capped
   below 8000 bytes (the engine aborts on longer ones).

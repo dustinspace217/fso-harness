@@ -199,3 +199,46 @@ Sources: the QA record (kept outside this repository).
 - **Mission lookup order** (cfilesystem.cpp:574-608): each -mod folder, then that folder's
   archives, before the next mod; FS2PATH and its archives last; first match wins; within one folder
   a loose file beats an archive.
+
+## 18. Found during the SM1-01 scripted-playtest demo (2026-10-12, afternoon)
+- **FSO's UI ignores a sub-frame click.** ui_mouse_process samples the left button once per
+  frame and only then folds in the down/up counts (code/ui/uimouse.cpp:43-58): a press and a
+  release inside one frame leave b1_status RELEASED after a RELEASED frame, so neither
+  BUTTON_JUST_PRESSED nor BUTTON_JUST_RELEASED is set (:67-75). Three `xdotool click`s on the
+  debriefing's Statistics tab did nothing; a press held across frames (0.9 s via drag, then 0.15 s
+  via the new held click) switched the tab every time. qtFRED is unaffected either way.
+- **Stopping the scope aborted the engine.** `systemctl --user stop` SIGTERMs every process in the
+  scope at once, Xvfb included. Core backtrace: UI_WINDOW::process -> SDL event poll ->
+  _XIOError -> exit() -> exit handlers -> SDLGraphicsOperations dtor -> XCloseDisplay -> a second
+  _XIOError -> exit() -> PathRenderer dtor -> nvgDeleteTexture -> free() -> abort (SIGABRT, a
+  12-34 MB core per stop). SIGTERM to the runner alone (it reaps the engine, then ends Xvfb):
+  engine exit code 0, no core, scope gone in about 2 s.
+- **qtFRED's save runs the error check itself** (qtfred/src/ui/FredView.cpp:433) and shows the
+  dialog only when errors were found (:439-442); potential-issue checks are switched off for that
+  run (:427). A save that goes through is therefore a clean check for errors, not for potential
+  issues (Tools > Error Checker, Shift+H, runs those).
+- **Qt popup menus and qtFRED dialogs are separate top-level windows.** `import -window <editor>`
+  shows an open menu as a black box and leaves dialogs out; `import -window root` shows both. The
+  Xvfb screen is the requested height + 80 px (runner._XVFB_EXTRA_HEIGHT).
+- **Scripting facts used by the demo pilot:** `ba.getGameDifficulty()` is 1-based
+  (Game_skill_level+1, scripting/api/libs/base.cpp:506; a new pilot defaults to index 1, Easy,
+  freespace2/freespace.cpp:259); `orientation:rotateVector` maps world to ship-local; under
+  FLIGHT_CONTROL_LUA_FULL, +Heading turns the nose right and +Pitch pushes it down;
+  `engine.addHook("On Frame", fn)` works from the `lua` verb; `loadfile` is available;
+  mission_goal has `isGoalSatisfied` (0 failed, 1 complete, 2 incomplete) and no `Status` field.
+- **qtFRED ignores SIGTERM** because it starts SDL (os_init at qtfred/src/mission/management.cpp:71
+  -> SDL_Init at code/osapi/osapi.cpp:424) and SDL3
+  installs a SIGINT/SIGTERM handler that only posts a quit event, which a Qt app never reads. Under
+  the runner-first stop it sat out the 20 s grace and ended in SIGKILL. SDL_NO_SIGNAL_HANDLERS=1
+  (SDL_hints.h, SDL_HINT_NO_SIGNAL_HANDLERS) in qtFRED's environment: SIGTERM ends it in well
+  under 10 s. The engine keeps SDL's handler: it reads the quit event and shuts down on its own path.
+- **Negative pointer coordinates** (QA CR-4): `xdotool mousemove --window <id> -40 12` fails with
+  "unrecognized option '-40'"; with `--` before the coordinates it works (a negative y landed above
+  the window as expected). The game window sits at display (0,40) under Xvfb, so the top 40 px of
+  the display are at negative window y.
+- **Runtime limit aborted the engine too** (QA SL-1, probed): a session left to reach RuntimeMaxSec
+  ended with ended_by "runtime_limit", SIGABRT and an 11.8 MB core: systemd stops the whole scope,
+  Xvfb included. Fixed by letting the runner end the run at runtime_sec (engine first, Xvfb last)
+  with RuntimeMaxSec = runtime_sec + 60 as the backstop.
+- **FSO's double click** is two presses within 250 ms as sampled per frame (ui/uimouse.cpp:68),
+  stricter than Qt's 400 ms; `click double=true` uses 0.08 s holds and gap in one xdotool process.

@@ -200,21 +200,46 @@ def _run_engine(sid: str, env: dict, started: float) -> int:
     """
     sess = session.load(sid)
     with open(session.run_dir(sess) / "engine.log", "ab") as log:
-        engine = subprocess.Popen(launcher.build_argv(sess), cwd=sess.cwd or sess.fs2path,
-                                  env=env, stdin=subprocess.DEVNULL, stdout=log,
-                                  stderr=subprocess.STDOUT)
-
         def mark_running(s: session.Session) -> None:
-            s.engine_pid, s.status = engine.pid, "running"
-        session.update(sid, mark_running)
+            s.engine_pid, s.status = proc.pid, "running"
+        # The try opens BEFORE Popen, so the engine's registration is covered by the handler that
+        # reaps it: a stop landing there used to skip _reap and main ended Xvfb under a live
+        # engine (QA SL-3, XFA-1/XFK-1). Still unguarded: a stop inside Popen itself (while it
+        # forks) or before its handle is stored in `proc`, within a second of launch; no harness
+        # path stops a session at that moment.
+        proc: subprocess.Popen | None = None
         try:
-            code = engine.wait()  # bounded by the scope's RuntimeMaxSec
+            proc = subprocess.Popen(launcher.build_argv(sess), cwd=sess.cwd or sess.fs2path,
+                                    env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                    stderr=subprocess.STDOUT)
+            session.update(sid, mark_running)
+            code = proc.wait(timeout=_time_left(sess, started))
             _block_sigterm()      # the run is over; nothing may interrupt the record (SL2-7)
         except _Terminated:
-            _record_exit(sid, _reap(engine), _termination_cause(sid, started))
+            _record_exit(sid, _reap(proc) if proc is not None else None,
+                         _termination_cause(sid, started))
             raise
+        except subprocess.TimeoutExpired:
+            # The runner's own runtime limit (QA SL-1): end the engine first and Xvfb last (main's
+            # finally), instead of letting RuntimeMaxSec take both down at once, which aborted the
+            # engine with a core dump.
+            cause = "runtime_limit"
+            try:
+                _block_sigterm()
+            except _Terminated:   # a stop landed just before the block (XFA-1/XFK-1); the
+                _block_sigterm()  # handler ignores any later SIGTERM, so one catch is enough
+                cause = _termination_cause(sid, started)
+            _record_exit(sid, _reap(proc), cause)
+            return 143            # same as the other harness-ended runs (main's docstring)
     _record_exit(sid, code)
     return code
+
+
+def _time_left(sess: session.Session, started: float) -> float | None:
+    """Seconds until the session's runtime limit (at least 0.1), or None when it has none."""
+    if not sess.runtime_sec:
+        return None
+    return max(0.1, sess.runtime_sec - (time.monotonic() - started))
 
 
 def _fail(sid: str, error: str) -> int:
@@ -245,8 +270,9 @@ def main(sid: str) -> int:
         run = session.run_dir(sess)
         (run / "home").mkdir(exist_ok=True)
         (run / "xdg-runtime").mkdir(mode=0o700, exist_ok=True)   # XDG requires 0700
-        env = envsetup.child_env(dict(os.environ), display, session.prefs_dir(sess),
-                                 sess.renderer, run)
+        env = envsetup.for_kind(envsetup.child_env(dict(os.environ), display,
+                                                   session.prefs_dir(sess), sess.renderer, run),
+                                sess.kind)
         Path(env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
         try:
             return _run_engine(sid, env, started)

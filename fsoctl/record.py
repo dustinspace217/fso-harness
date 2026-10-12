@@ -181,6 +181,8 @@ def _issue(sid: str, kind: str, args: dict) -> None:
         xinput.drag(sid, tuple(args["from"]), tuple(args["to"]), args.get("button", 1))
     elif kind == "scroll":
         xinput.scroll(sid, args["x"], args["y"], args["clicks"])
+    elif kind == "move":
+        xinput.move(sid, args["x"], args["y"])
     elif kind == "lua":
         game.lua(sid, args["code"])
     elif kind == "post_event":

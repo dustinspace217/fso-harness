@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from fsoctl.envsetup import child_env
+from fsoctl.envsetup import child_env, for_kind
 
 _BASE = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0", "HOME": "/home/x", "PATH": "/usr/bin",
          "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
@@ -59,3 +59,17 @@ def test_child_env_vulkan_passes_icd_only_if_caller_set_it():
     env2 = child_env({"VK_ICD_FILENAMES": "/x.json", "HOME": "/h"}, ":93", Path("/p"), "vulkan",
                      Path("/r"))
     assert env2["VK_ICD_FILENAMES"] == "/x.json"
+
+
+def test_qtfred_gets_no_sdl_signal_handlers_and_the_game_keeps_them():
+    # SDL turns SIGTERM into a quit event. The engine reads it and shuts down; qtFRED (a Qt app
+    # that also starts SDL) never reads it, so it ignored the stop for the runner's whole 20 s
+    # grace and was then SIGKILLed (2026-10-12). Without SDL's handler, SIGTERM just ends qtFRED.
+    q = for_kind(child_env(dict(_BASE), ":93", Path("/p"), "opengl", Path("/r")), "qtfred")
+    g = for_kind(child_env(dict(_BASE), ":93", Path("/p"), "opengl", Path("/r")), "game")
+    assert q["SDL_NO_SIGNAL_HANDLERS"] == "1"
+    assert "SDL_NO_SIGNAL_HANDLERS" not in g
+    # QA CR-6: a game must not inherit it from the caller (it would skip the clean shutdown).
+    inherited = {**_BASE, "SDL_NO_SIGNAL_HANDLERS": "1"}
+    g2 = for_kind(child_env(inherited, ":93", Path("/p"), "opengl", Path("/r")), "game")
+    assert "SDL_NO_SIGNAL_HANDLERS" not in g2

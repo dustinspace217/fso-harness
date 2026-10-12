@@ -147,7 +147,7 @@ def no_prior_oom():
 @pytest.mark.usefixtures("no_prior_oom")
 @pytest.mark.parametrize("marker, runtime, cause", [(True, 1800, "stop"),
                                                     (False, 1800, "signal"),
-                                                    (False, 1, "runtime_limit")])
+                                                    (False, 5, "runtime_limit")])
 def test_sigterm_records_how_the_run_ended(tmp_runtime, tmp_path, marker, runtime, cause):
     # Before: SIGTERM killed the runner outright, so the session said "running" forever with
     # no exit info, and Xvfb's termination was skipped.
@@ -278,3 +278,104 @@ def test_reap_gives_up_on_an_engine_that_survives_sigkill():
         def wait(self, timeout=None):
             raise subprocess.TimeoutExpired("engine", timeout)
     assert runner._reap(Engine()) is None
+
+
+@pytest.mark.skipif(not Path("/usr/bin/Xvfb").exists(), reason="needs Xvfb")
+@pytest.mark.usefixtures("no_prior_oom")
+def test_the_runner_ends_the_run_itself_at_its_runtime_limit(tmp_runtime, tmp_path):
+    # QA SL-1 (probed: an expiring RuntimeMaxSec took Xvfb down with the engine -> SIGABRT core).
+    # Now the runner reaps the engine at runtime_sec and ends Xvfb after it, with no SIGTERM.
+    s = _mk(kind="qtfred", binary=str(_engine_script(tmp_path)))
+    s.runtime_sec = 3
+    session.save(s)
+    env = {**os.environ, "FSO_HARNESS_RUNTIME": str(tmp_runtime), "PYTHONPATH": str(_REPO)}
+    proc = subprocess.Popen([sys.executable, "-m", "fsoctl.runner", s.id], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    try:
+        assert proc.wait(timeout=30) == 143
+        got = session.load(s.id)
+        assert got.ended_by == "runtime_limit" and got.status == "exited"
+        assert got.exit_info["signal"] == "SIGTERM"      # the stand-in got the polite stop
+        assert _gone_within(got.xvfb_pid, 5), "Xvfb outlived its runner"
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=10)
+
+
+def test_a_stop_while_the_engine_registers_still_reaps_it(tmp_runtime, sigmask, monkeypatch):
+    # QA SL-3: the try that catches _Terminated used to open after the engine was registered, so
+    # a stop landing during registration skipped _reap and main ended Xvfb under a live engine.
+    s = _mk(status="starting")
+
+    class Engine:
+        """Stand-in Popen."""
+        pid = 4242
+
+        def __init__(self, *a, **kw):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+    real_update = runner.session.update
+
+    def update(sid, fn):
+        if fn.__name__ == "mark_running":
+            raise runner._Terminated()
+        return real_update(sid, fn)
+    reaped = []
+    monkeypatch.setattr(runner.subprocess, "Popen", Engine)
+    monkeypatch.setattr(runner.launcher, "build_argv", lambda sess: ["engine"])
+    monkeypatch.setattr(runner.session, "update", update)
+    monkeypatch.setattr(runner, "_reap", lambda engine: reaped.append(engine.pid) or -15)
+    monkeypatch.setattr(runner, "_record_exit", lambda *a, **k: None)
+    with pytest.raises(runner._Terminated):
+        runner._run_engine(s.id, {}, time.monotonic())
+    assert reaped == [4242]
+
+
+@pytest.mark.parametrize("runtime, elapsed, want", [(None, 5, None), (10, 4, 6), (10, 12, 0.1)])
+def test_time_left_is_bounded_below(tmp_runtime, runtime, elapsed, want, monkeypatch):
+    s = _mk()
+    s.runtime_sec = runtime
+    monkeypatch.setattr(runner.time, "monotonic", lambda: 100.0 + elapsed)
+    got = runner._time_left(s, 100.0)
+    assert got == (pytest.approx(want) if want is not None else None)
+
+
+def test_a_stop_at_the_runtime_limit_still_reaps_the_engine(tmp_runtime, sigmask, monkeypatch):
+    # QA XFA-1/XFK-1: a SIGTERM landing between the runtime-limit timeout and the signal block
+    # used to escape the TimeoutExpired handler unreaped. It is now caught there, and the stop
+    # (its marker present) is recorded as the cause.
+    s = _mk(status="running")
+    (session.run_dir(s) / session.STOP_MARKER).touch()
+
+    class Engine:
+        """Stand-in Popen whose wait always reaches the runtime limit."""
+        pid = 4242
+
+        def __init__(self, *a, **kw):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("engine", timeout)
+    calls = {"block": 0}
+    real_block = runner._block_sigterm
+
+    def block():
+        calls["block"] += 1
+        if calls["block"] == 1:
+            raise runner._Terminated()      # the stop arrives in the gap
+        real_block()
+    reaped, recorded = [], []
+    monkeypatch.setattr(runner.subprocess, "Popen", Engine)
+    monkeypatch.setattr(runner.launcher, "build_argv", lambda sess: ["engine"])
+    monkeypatch.setattr(runner, "_block_sigterm", block)
+    monkeypatch.setattr(runner, "_reap", lambda engine: reaped.append(engine.pid) or -15)
+    monkeypatch.setattr(runner, "_record_exit",
+                        lambda sid, code, cause=None: recorded.append(cause))
+    monkeypatch.setattr(runner, "_oom_kills", lambda: 0)
+    assert runner._run_engine(s.id, {}, time.monotonic()) == 143
+    assert reaped == [4242] and recorded == ["stop"]
+

@@ -65,3 +65,21 @@ def child_env(base: dict, display: str, prefs: Path, renderer: str, run: Path) -
     else:
         env.pop("LIBGL_ALWAYS_SOFTWARE", None)
     return env
+
+
+def for_kind(env: dict, kind: str) -> dict:
+    """Return `env` (changed in place) with what a session of this kind ("game" | "qtfred") needs.
+
+    qtfred: SDL_NO_SIGNAL_HANDLERS=1. SDL turns SIGTERM into a quit event; the engine reads it and
+    shuts down, but qtFRED (a Qt app that also starts SDL: os_init, qtfred/src/mission/
+    management.cpp:71 -> code/osapi/osapi.cpp:424) never does,
+    so a stop waited out the runner's whole 20 s grace and ended in SIGKILL (2026-10-12). With
+    SDL's handler off, SIGTERM ends qtFRED at once; it only ever edits a copy, so nothing is lost.
+    """
+    if kind == "qtfred":
+        env["SDL_NO_SIGNAL_HANDLERS"] = "1"
+    else:
+        # The game must keep SDL's handler even if the caller's environment turned it off: its
+        # quit event is the clean shutdown the runner-first stop relies on (QA CR-6).
+        env.pop("SDL_NO_SIGNAL_HANDLERS", None)
+    return env

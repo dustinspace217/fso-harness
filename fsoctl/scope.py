@@ -16,6 +16,7 @@ _MEM_FLOOR_KB = 2 * 1024 * 1024
 _MEM_SHARE = 0.60
 _START_TIMEOUT = 10.0
 _KILL_WAIT = 10.0     # seconds to wait for a SIGKILLed scope to end
+POLITE_STOP_SEC = 20  # stop()'s wait for `systemctl stop` before it escalates to SIGKILL
 # States in which nothing of the scope is left running, as `systemctl is-active` prints them.
 _GONE_STATES = ("inactive", "failed", "unknown")
 
@@ -146,7 +147,7 @@ def _kill(unit: str) -> None:
                        "kernel (D state) cannot be killed until its I/O finishes")
 
 
-def stop(unit: str, timeout: float = 20) -> None:
+def stop(unit: str, timeout: float = POLITE_STOP_SEC) -> None:
     """Stop the scope (kills everything in it); succeeds if it is already gone.
 
     Polite stop first (SIGTERM, which SDL turns into a quit event); if that does not finish within

@@ -61,8 +61,12 @@ from fsoctl import bridge_install, launcher  # noqa: E402  (after server put the
 
 server.launch(ready_timeout=240)
 _, budget = calls[-1]
-# launch.lock wait + bridge.lock wait + scope start (10 s) + readiness + a stop on failure (~30 s).
-assert budget >= 240 + launcher._LOCK_WAIT + bridge_install._LOCK_WAIT + 10 + 30, budget
+# launch.lock wait + bridge.lock wait + scope start (10 s) + readiness + a stop on failure: the
+# runner wait, the scope's polite stop (20 s) and its kill wait (QA CR-1/SL-2/TA-4).
+from fsoctl import scope  # noqa: E402
+STOP_WORST = launcher._RUNNER_EXIT_WAIT + scope.POLITE_STOP_SEC + scope._KILL_WAIT
+assert budget >= 240 + launcher._LOCK_WAIT + bridge_install._LOCK_WAIT + 10 + STOP_WORST, budget
+assert server.TERM_GRACE_SEC >= STOP_WORST + 5, (server.TERM_GRACE_SEC, STOP_WORST)
 assert "--interactive" not in calls[-1][0]          # default: -noninteractive stays on
 server.launch(interactive=True, runtime=600)
 assert "--interactive" in calls[-1][0] and "--runtime=600" in calls[-1][0]
@@ -74,7 +78,7 @@ CASES = {
                    skip_movies=True, interactive=True, runtime=600, extra_args=["-window"]),
     "status": dict(id=S), "stop": dict(id=S), "list_sessions": {}, "cleanup": {},
     "version": {},
-    "screenshot": dict(id=S, crop="10x10+0+0", scale=0.5),
+    "screenshot": dict(id=S, crop="10x10+0+0", scale=0.5, full=True),
     "log": dict(id=S, grep="-ERR"), "state": dict(id=S, ships=False), "journal": dict(id=S),
     "crash_report": dict(id=S),
     "sexp": dict(id=S, expr="-( true )", mode="eval"), "lua": dict(id=S, code="--[[x]] return 1"),
@@ -83,7 +87,7 @@ CASES = {
     "autopilot": dict(id=S, on=True), "time": dict(id=S, compression=400),
     "keys": dict(id=S, keys=["-", "minus"], hold_ms=0),
     "click": dict(id=S, x=-1, y=5, double=True), "drag": dict(id=S, x1=1, y1=2, x2=-3, y2=4),
-    "scroll": dict(id=S, x=10, y=10, clicks=-3),
+    "scroll": dict(id=S, x=10, y=10, clicks=-3), "move": dict(id=S, x=-1, y=5),
     "wait_for": dict(id=S, kind="log", value="-ERR", timeout=5),
     "replay": dict(source_id=S, speed=2), "build": dict(worktree="/tmp/w", targets=["-x", "fs2"]),
     "scratch_mod": dict(action="remove", name="fso_harness_scratch_abcdef", label="-l"),
@@ -118,6 +122,8 @@ for fn_name, kwargs in CASES.items():
             same = (float(got) == float(value) if isinstance(value, (int, float))
                     else str(got) == value)
             assert same, f"{fn_name}: {name}={value!r} landed as {got!r} ({argv})"
+        elif name in ns and isinstance(value, bool):   # a flag the tool dropped (QA TA-8)
+            assert ns[name] is value, f"{fn_name}: {name}={value!r} landed as {ns[name]!r}"
 
 # ---- timeout path: SIGTERM first, so fsoctl's cleanup can run -------------------------------
 with tempfile.TemporaryDirectory() as d:

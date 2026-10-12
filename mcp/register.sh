@@ -25,7 +25,9 @@ envargs=(-e "FS2PATH=${FS2PATH}" -e "FSO_BIN=${FSO_BIN}")
 
 # Replace an existing registration so a re-run with new paths does not fail on "already exists".
 claude mcp remove --scope user fso-harness >/dev/null 2>&1 || true
-claude mcp add --scope user "${envargs[@]}" fso-harness -- "${HERE}/.venv/bin/python" "${HERE}/server.py"
+# The name goes BEFORE the -e list: -e takes any number of values, so a name placed after it
+# is read as one more KEY=value and rejected ("Invalid environment variable format").
+claude mcp add --scope user fso-harness "${envargs[@]}" -- "${HERE}/.venv/bin/python" "${HERE}/server.py"
 echo "registered with FS2PATH=${FS2PATH} FSO_BIN=${FSO_BIN}" \
 	"${FSO_BIN_DEBUG:+FSO_BIN_DEBUG=${FSO_BIN_DEBUG}} ${QTFRED_BIN:+QTFRED_BIN=${QTFRED_BIN}}"
 echo "Restart Claude Code to pick it up; check with: claude mcp list"

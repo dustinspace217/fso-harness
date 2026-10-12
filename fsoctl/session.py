@@ -50,7 +50,7 @@ class Session:
     # How the run ended: "stop" | "runtime_limit" | "oom" | "signal" | "exit"; None while it runs.
     # Written by the runner (QA SL-7), so a scope killed by its own limits is not left "running".
     ended_by: str | None = None
-    runtime_sec: int | None = None    # the scope's RuntimeMaxSec
+    runtime_sec: int | None = None    # the runner's own deadline; RuntimeMaxSec is 60 s later
     memory_max: str | None = None     # the scope's MemoryMax property value, e.g. "2097152K"
 
 
