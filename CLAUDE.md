@@ -52,7 +52,12 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
 - **Multiplayer runs inside a match**: an unprivileged user+network namespace per game
   (`unshare --map-root-user --net` holder process in its own scope; sessions join through
   `nsenter`). Nothing is ever bound on the real network; never add a port forward or firewall
-  rule to "help". Every engine process binds its own UDP port (7808, 7809, ...); `-almission`
+  rule to "help". EVERY session's ENGINE runs in a private network by default (a match's via
+  nsenter, or its own via launcher.PRIVATE_NET_PREFIX in runner.engine_argv; `--network real`
+  opts out) because the engine binds UDP 7808 on every interface at startup. The runner and
+  Xvfb stay on the HOST: abstract X sockets are per network namespace, so an Xvfb inside a
+  namespace takes the desktop's display number as seen from the host (QA 2026-10-13). Every
+  engine process binds its own UDP port; `-almission`
   belongs to the host player, never the standalone; the bridge posts the join, start-game and
   sync-launch events for clients (spec `2026-10-12-fso-harness-multiplayer-design.md`,
   probe-results section 21).

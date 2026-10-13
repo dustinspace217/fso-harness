@@ -93,3 +93,17 @@ def test_journal_lines_are_json(tmp_runtime):
     record.append(s, "click", {"x": 1, "y": 2})
     line = (session.run_dir(s) / "journal.jsonl").read_text().strip()
     assert json.loads(line)["args"] == {"x": 1, "y": 2}
+
+
+def test_launch_request_carries_the_network_mode(tmp_runtime):
+    """Replay keeps the opt-out: a real-network session replays on the real network (QA XFA-5);
+    an old record (None) replays private, the current default."""
+    s = session.new_session(kind="game", binary="/bin/true", fs2path="/tmp", mods=[], mission=None,
+                            renderer="opengl", width=1, height=1, switches={}, allow_eval=False,
+                            extra_args=[], network="real")
+    assert record.launch_request_for(s).network == "real"
+    s2 = session.new_session(kind="game", binary="/bin/true", fs2path="/tmp", mods=[], mission=None,
+                             renderer="opengl", width=1, height=1, switches={}, allow_eval=False,
+                             extra_args=[])
+    s2.network = None
+    assert record.launch_request_for(s2).network == "private"

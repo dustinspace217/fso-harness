@@ -19,7 +19,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import envsetup, launcher, session
+from . import envsetup, launcher, match, session
+from .errors import HarnessError
 
 _XVFB_READY_TIMEOUT = 10.0
 _XVFB_EXTRA_HEIGHT = 80  # room below the game window for qtFRED's status bar and dialogs
@@ -83,12 +84,14 @@ def _start_xvfb(width: int, height: int) -> tuple[str, subprocess.Popen]:
     """Start Xvfb on a free display and return (":N", process).
 
     Xvfb chooses the display number itself and writes it to the pipe given by -displayfd, so
-    parallel sessions never collide on a fixed number.
+    parallel sessions never collide on a fixed number. It runs HERE, on the host, never inside
+    the session's network namespace (see launcher.PRIVATE_NET_PREFIX for why).
     """
     rfd, wfd = os.pipe()
-    proc = subprocess.Popen(["Xvfb", "-displayfd", str(wfd), "-screen", "0",
-                             f"{width}x{height + _XVFB_EXTRA_HEIGHT}x24", "-nolisten", "tcp"],
-                            pass_fds=(wfd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    argv = ["Xvfb", "-displayfd", str(wfd), "-screen", "0",
+            f"{width}x{height + _XVFB_EXTRA_HEIGHT}x24", "-nolisten", "tcp"]
+    proc = subprocess.Popen(argv, pass_fds=(wfd,), stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL)
     os.close(wfd)
     try:
         data = _read_display(rfd, _XVFB_READY_TIMEOUT)
@@ -193,6 +196,19 @@ def _reap(engine: subprocess.Popen) -> int | None:
         return None
 
 
+def engine_argv(sess: session.Session) -> list[str]:
+    """Return the engine's argv with its network prefix: the match's namespace (nsenter) for a
+    match session, launcher.PRIVATE_NET_PREFIX for a private one (the default; an old record with
+    no network field counts as private), bare for `--network real`. Only the engine is wrapped:
+    this runner and its Xvfb stay on the host."""
+    argv = launcher.build_argv(sess)
+    if sess.match:
+        return match.nsenter_prefix(match.load(sess.match)) + argv
+    if sess.network == "real":
+        return argv
+    return launcher.PRIVATE_NET_PREFIX + argv
+
+
 def _run_engine(sid: str, env: dict, started: float) -> int:
     """Start the engine/qtFRED, wait for it, record its exit, and return its exit code.
 
@@ -209,7 +225,7 @@ def _run_engine(sid: str, env: dict, started: float) -> int:
         # path stops a session at that moment.
         proc: subprocess.Popen | None = None
         try:
-            proc = subprocess.Popen(launcher.build_argv(sess), cwd=sess.cwd or sess.fs2path,
+            proc = subprocess.Popen(engine_argv(sess), cwd=sess.cwd or sess.fs2path,
                                     env=env, stdin=subprocess.DEVNULL, stdout=log,
                                     stderr=subprocess.STDOUT)
             session.update(sid, mark_running)
@@ -282,6 +298,10 @@ def main(sid: str) -> int:
             return _run_engine(sid, env, started)
         except OSError as e:
             return _fail(sid, f"engine: {e}")
+        except HarnessError as e:
+            # engine_argv's prefix lookup: the match was removed between launch and this start
+            # (QA Phase B, CR hazard 1); a failed record beats a traceback stuck at "starting".
+            return _fail(sid, f"engine: {e.message}")
     except _Terminated:
         # Ended before (or while) the engine was being started: record why, without exit code.
         if session.load(sid).ended_by is None:

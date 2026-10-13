@@ -6,9 +6,9 @@ import sys
 
 import pytest
 
-from fsoctl import launcher, match, paths, session
-from fsoctl.errors import (EXIT_ENGINE, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT, EXIT_USAGE,
-                           HarnessError)
+from fsoctl import cli, launcher, match, paths, session
+from fsoctl.errors import (EXIT_ENGINE, EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT,
+                           EXIT_USAGE, HarnessError)
 from fsoctl.launcher import LaunchRequest
 
 
@@ -206,27 +206,6 @@ def test_prepare_writes_multi_cfg_and_switches(tmp_runtime, monkeypatch):
     assert "+pxo" not in cfg
 
 
-def test_start_wraps_runner_in_nsenter_for_match_sessions(tmp_runtime, monkeypatch):
-    _match_alive(monkeypatch)
-    monkeypatch.setattr(match, "nsenter_prefix", lambda m: ["nsenter", "--target", "1", "--"])
-    monkeypatch.setattr(launcher.bridge_install, "install", lambda fs2: {"updated": False})
-    game = tmp_runtime.parent / "FS2"
-    game.mkdir()
-    monkeypatch.setenv("FS2PATH", str(game))
-    seen = {}
-
-    def fake_start(unit, argv, env, log, props):
-        seen["argv"] = argv
-    monkeypatch.setattr(launcher.scope, "start", fake_start)
-    monkeypatch.setattr(launcher, "check_capacity", lambda: [])
-    launcher._start(LaunchRequest(binary="/bin/true", match="m0a1b2c3d", role="client",
-                                  pilot_mode="create"))
-    assert seen["argv"][:4] == ["nsenter", "--target", "1", "--"]
-    assert seen["argv"][4:7] == [sys.executable, "-m", "fsoctl.runner"]
-    seen.clear()
-    launcher._start(LaunchRequest(binary="/bin/true"))
-    assert seen["argv"][0] == sys.executable          # ordinary sessions are not wrapped
-
 
 def test_multiplayer_values_cannot_inject_flags_or_config(tmp_runtime, monkeypatch):
     # The engine joins argv back into one string and re-splits it (cmdline.cpp), and game_name
@@ -287,12 +266,12 @@ def test_status_reports_dead_network(tmp_runtime, monkeypatch):
     session.save(s)
     monkeypatch.setattr(launcher.channel.Channel, "heartbeat", lambda self: {})
     monkeypatch.setattr(launcher, "alive", lambda sess: True)
-    assert launcher.status(s.id)["network"] == "alive"
+    assert launcher.status(s.id)["match_network"] == "alive"
     monkeypatch.setattr(match, "alive", lambda m: False)
     st = launcher.status(s.id)
-    assert st["network"] == "dead" and st["status"] == "dead-network"
+    assert st["match_network"] == "dead" and st["status"] == "dead-network"
     plain = _sess()
-    assert launcher.status(plain.id)["network"] is None
+    assert launcher.status(plain.id)["match_network"] is None
     assert launcher.list_all()["sessions"][0]["role"] == "client"
 
 
@@ -512,3 +491,132 @@ def test_multi_launch_switch_and_multi_cfg_for_every_role(tmp_runtime, monkeypat
                                                role="client", pilot_mode="create"))
     sw2 = json.loads((paths.channel_dir(session.prefs_dir(sess2)) / "switches.txt").read_text())
     assert sw2["multi_launch"] is False
+
+
+# ---- a private network for every session (DEF-MP-03, Option A) ------------------------------
+
+def _captured_start(monkeypatch, tmp_runtime):
+    """Stub scope.start to capture the runner argv; returns the dict it fills."""
+    monkeypatch.setattr(launcher.bridge_install, "install", lambda fs2: {"updated": False})
+    game = tmp_runtime.parent / "FS2"
+    game.mkdir(exist_ok=True)
+    monkeypatch.setenv("FS2PATH", str(game))
+    seen = {}
+
+    def fake_start(unit, argv, env, log, props):
+        seen["argv"] = argv
+    monkeypatch.setattr(launcher.scope, "start", fake_start)
+    monkeypatch.setattr(launcher, "check_capacity", lambda: [])
+    return seen
+
+
+def test_runner_runs_on_the_host_in_every_network_mode(tmp_runtime, monkeypatch):
+    """The namespace wraps the ENGINE (runner.engine_argv), never the runner: Xvfb must stay on
+    the host so its display number is allocated where the host's X tools look for it (an Xvfb
+    inside a namespace took the desktop's number, QA 2026-10-13). So the runner argv is the bare
+    interpreter in every mode, and the record carries the mode for the runner to read."""
+    seen = _captured_start(monkeypatch, tmp_runtime)
+    launcher._start(LaunchRequest(binary="/bin/true"))
+    assert seen["argv"] == [sys.executable, "-m", "fsoctl.runner", seen["argv"][-1]]
+    assert session.load(seen["argv"][-1]).network == "private"
+    assert session.load(seen["argv"][-1]).display is None      # Xvfb picks it, on the host
+    seen.clear()
+    launcher._start(LaunchRequest(binary="/bin/true", network="real"))
+    assert seen["argv"][0] == sys.executable and session.load(seen["argv"][-1]).network == "real"
+    seen.clear()
+    _match_alive(monkeypatch)
+    launcher._start(LaunchRequest(binary="/bin/true", match="m0a1b2c3d", role="client",
+                                  pilot_mode="create"))
+    assert seen["argv"][0] == sys.executable and "nsenter" not in seen["argv"]
+
+
+def test_match_sessions_refuse_network_real_and_unknown_values(tmp_runtime, monkeypatch):
+    _match_alive(monkeypatch)
+    with pytest.raises(HarnessError) as e:
+        launcher._validate(LaunchRequest(binary="/bin/true", match="m0a1b2c3d", role="client",
+                                         pilot_mode="create", network="real"))
+    assert e.value.code == EXIT_USAGE
+    with pytest.raises(HarnessError) as e:
+        launcher._validate(LaunchRequest(binary="/bin/true", network="lan"))
+    assert e.value.code == EXIT_USAGE
+
+
+def test_private_network_needs_unshare_and_ip_and_refuses_root(tmp_runtime, monkeypatch):
+    """A missing tool fails BEFORE any scope starts, naming the tool and the opt-out (QA CR-3,
+    SL-2); real root is refused as it is for a match holder (QA SA-5)."""
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: None if name == "ip" else "/bin/x")
+    with pytest.raises(HarnessError) as e:
+        launcher._validate(LaunchRequest(binary="/bin/true"))
+    assert e.value.code == EXIT_LAUNCH and "ip" in e.value.message and "real" in e.value.hint
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/bin/x")
+    launcher._validate(LaunchRequest(binary="/bin/true"))            # tools present: fine
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: None if name == "ip" else "/bin/x")
+    launcher._validate(LaunchRequest(binary="/bin/true", network="real"))   # not needed
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: "/bin/x")
+    monkeypatch.setattr(launcher.os, "geteuid", lambda: 0)
+    with pytest.raises(HarnessError) as e:
+        launcher._validate(LaunchRequest(binary="/bin/true"))
+    assert e.value.code == EXIT_REFUSED
+
+
+def test_status_and_list_show_the_network_mode(tmp_runtime, monkeypatch):
+    """status()["network"] is the record's mode; the match's liveness moved to "match_network"
+    (QA CR-1: the liveness key used to shadow the mode)."""
+    s = _sess()
+    s.network = "real"
+    session.save(s)
+    monkeypatch.setattr(launcher.scope, "is_active", lambda unit: True)
+    monkeypatch.setattr(launcher.scope, "is_gone", lambda unit: False)
+    out = launcher.status(s.id)
+    assert out["network"] == "real" and out["match_network"] is None
+    rows = [r for r in launcher.list_all()["sessions"] if r["id"] == s.id]
+    assert rows and rows[0]["network"] == "real"
+
+
+def test_old_records_load_with_an_unknown_network(tmp_runtime):
+    """A record written before the field existed must not claim "private" (QA XFA-6): it loads as
+    None, which status shows as null and the runner treats as private."""
+    s = _sess()
+    path = session.run_dir(s) / "session.json"
+    d = json.loads(path.read_text())
+    d.pop("network")
+    d.pop("display")
+    path.write_text(json.dumps(d))
+    loaded = session.load(s.id)
+    assert loaded.network is None and loaded.display is None
+
+
+def test_wait_ready_names_a_namespace_failure(tmp_runtime, monkeypatch):
+    """When the engine dies before the bridge starts and engine.log says why (unshare/nsenter/ip
+    failed), the launch error is EXIT_LAUNCH with that line and the opt-out, not a crash_report
+    hint for an engine that never ran (QA SL-2, TA-4, CR-3, XFA-7)."""
+    s = _sess()
+    log = session.run_dir(s) / "engine.log"
+    log.write_text("unshare: unshare failed: Operation not permitted\n")
+    monkeypatch.setattr(launcher.channel.Channel, "wait_ready",
+                        lambda self, timeout, alive: (_ for _ in ()).throw(
+                            HarnessError(EXIT_ENGINE, "engine exited before the bridge started",
+                                         "run `fsoctl crash_report <id>`")))
+    with pytest.raises(HarnessError) as e:
+        launcher._wait_ready(LaunchRequest(binary="/bin/true"), s.id)
+    assert e.value.code == EXIT_LAUNCH
+    assert "Operation not permitted" in e.value.message and "--network real" in e.value.hint
+    log.write_text("Assert: something else\n")
+    with pytest.raises(HarnessError) as e:
+        launcher._wait_ready(LaunchRequest(binary="/bin/true"), s.id)
+    assert e.value.code == EXIT_ENGINE and "something else" in e.value.hint
+
+
+def test_cli_network_flag(tmp_runtime, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(launcher, "launch", lambda req: seen.update(req=req) or {"ok": True})
+    assert cli.main(["--json", "launch", "--binary", "/bin/true", "--network", "real"]) == 0
+    assert seen["req"].network == "real"
+    assert cli.main(["--json", "launch", "--binary", "/bin/true"]) == 0
+    assert seen["req"].network == "private"
+
+
+# ---- display numbers are allocated on the host side (private-network sessions) ------------------
+
+
+

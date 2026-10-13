@@ -64,8 +64,11 @@ allows (3 sessions = server + 2 clients); PXO / online-tracker games (never); mu
   and XDG runtime into the run folder).
 - Every engine run binds UDP 7808 on every interface, single-player included (game_init calls
   psnet_init unconditionally; measured on an ordinary harness session 2026-10-13, QA SA-3).
-  Matches contain match sessions only; ordinary sessions are as visible on the LAN as the game
-  itself. Whether every session should get a private network is a later design decision.
+  Decided 2026-10-13 (Dustin: "I concur with your recommendation"): every session runs in its
+  own loopback-only network by default (no holder for a single session; `--network real` opts
+  out; a match session always lives in its match). DEF-MP-03 resolved. Only the ENGINE is in
+  the namespace (runner.engine_argv); the runner and Xvfb stay on the host because abstract X
+  sockets are per network namespace (an Xvfb inside the namespace took the desktop's number).
 - A dead holder is a lost handle, not a dead network (QA SL premise attack 1): member processes
   hold the namespace until they exit; sessions in a dead match stay stoppable through their own
   scopes. The match record is written back as "dead" once, with one audit line.

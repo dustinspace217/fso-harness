@@ -6,6 +6,9 @@ process is killed in a finally block.
 """
 import contextlib
 import os
+import socket
+import dataclasses
+import json
 import signal
 import stat
 import subprocess
@@ -16,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from fsoctl import runner, session
+from fsoctl import launcher, runner, session
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -390,9 +393,101 @@ def test_a_standalone_session_runs_without_xvfb_or_display(tmp_runtime, tmp_path
     script = tmp_path / "fake_engine.sh"
     script.write_text("#!/bin/sh\nenv > \"$FSO_PREFERENCES_PATH/env.txt\"\nexec sleep 120\n")
     script.chmod(0o755)
-    s = _mk(binary=str(script), role="standalone", match="m0a1b2c3d", port=7808)
+    s = _mk(binary=str(script), role="standalone", port=7808)   # no match record: own network
     got, _ = _run_and_terminate(tmp_runtime, s, marker=True, expect_xvfb=False)
     assert got.display is None and got.xvfb_pid is None
     env_text = (session.prefs_dir(got) / "env.txt").read_text()
     assert "\nDISPLAY=" not in env_text and not env_text.startswith("DISPLAY=")
     assert got.ended_by == "stop"
+
+
+# ---- the ENGINE runs in the namespace; the runner and Xvfb stay on the host ---------------------
+
+def _ns_sess(**kw):
+    return _mk(**kw) if "status" in kw else _mk(status="starting", **kw)
+
+
+def test_engine_argv_wraps_only_the_engine(monkeypatch):
+    """Private: the unshare prefix in front of the engine's own argv; real: bare; match: the
+    match's nsenter prefix; an old record (network None) is treated as private."""
+    built_for = []
+    monkeypatch.setattr(launcher, "build_argv",
+                        lambda sess: built_for.append(sess.id) or ["fs2", "-nomovies"])
+    wrapped = [*launcher.PRIVATE_NET_PREFIX, "fs2", "-nomovies"]
+    private = _ns_sess(network="private")
+    assert runner.engine_argv(private) == wrapped
+    assert built_for == [private.id]                     # the argv is built for THIS session
+    assert runner.engine_argv(_ns_sess(network=None)) == wrapped
+    assert runner.engine_argv(_ns_sess(network="real")) == ["fs2", "-nomovies"]
+    entered = []
+    monkeypatch.setattr(runner.match, "load", lambda mid: entered.append(mid) or object())
+    monkeypatch.setattr(runner.match, "nsenter_prefix", lambda m: ["nsenter", "--"])
+    got = runner.engine_argv(_ns_sess(match="m0a1b2c3d", role="client"))
+    assert got == ["nsenter", "--", "fs2", "-nomovies"]
+    assert entered == ["m0a1b2c3d"]
+
+
+def test_private_prefix_script_passes_argv_intact_and_stops_when_ip_fails(tmp_path):
+    """Executable check of the sh script (QA TA-2): every word reaches the program unchanged
+    (spaces, quotes), and a failing `ip` stops the chain instead of exec'ing with lo down."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ip = fake_bin / "ip"
+    ip.write_text("#!/bin/sh\nexit ${FAKE_IP_EXIT:-0}\n")
+    ip.chmod(0o755)
+    script = launcher.PRIVATE_NET_PREFIX[-2]                      # the sh -c program text
+    env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"}
+    out = subprocess.run(["sh", "-c", script, "sh", sys.executable, "-c",
+                          "import sys, json; print(json.dumps(sys.argv[1:]))", "a b", '"q"'],
+                         env=env, capture_output=True, text=True, timeout=20, check=False)
+    assert out.returncode == 0 and json.loads(out.stdout) == ["a b", '"q"']
+    out = subprocess.run(["sh", "-c", script, "sh", sys.executable, "-c", "print('ran')"],
+                         env={**env, "FAKE_IP_EXIT": "1"}, capture_output=True, text=True,
+                         timeout=20, check=False)
+    assert out.returncode != 0 and "ran" not in out.stdout
+
+
+@pytest.mark.skipif(not Path("/usr/bin/Xvfb").exists(), reason="needs Xvfb")
+def test_host_xvfb_skips_a_number_whose_abstract_socket_is_taken():
+    """A decoy abstract listener on the lowest host-free number must make Xvfb's own -displayfd
+    allocation skip it: the property that makes host-side Xvfb safe where a namespaced one was
+    not (QA SL-1 / SA-1 / XFA-1 / TA-1)."""
+    def host_free(n):
+        if Path(f"/tmp/.X{n}-lock").exists() or Path(f"/tmp/.X11-unix/X{n}").exists():
+            return False
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            s.connect(b"\0/tmp/.X11-unix/X%d" % n)
+            return False
+        except OSError:
+            return True
+        finally:
+            s.close()
+    m = next(n for n in range(1, 200) if host_free(n))           # bounded
+    decoy = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    decoy.bind(b"\0/tmp/.X11-unix/X%d" % m)
+    decoy.listen(1)
+    try:
+        display, proc = runner._start_xvfb(320, 240)
+        try:
+            assert display != f":{m}", "Xvfb took the decoy's number"
+        finally:
+            proc.terminate()
+            proc.wait(timeout=10)
+    finally:
+        decoy.close()
+
+
+def test_runner_fails_the_record_when_the_match_prefix_cannot_be_built(tmp_runtime):
+    """A match session whose match record is gone by the time the runner starts (the match was
+    removed between launch and runner start) must end as a FAILED record naming the match, not a
+    traceback with the record stuck at "starting" (QA Phase B, CR hazard 1: match.nsenter_prefix
+    raises HarnessError, which the runner used to let through)."""
+    s = _mk(binary="/bin/true", match="m0a1b2c3d", role="client", network="private")
+    env = {**os.environ, "FSO_HARNESS_RUNTIME": str(tmp_runtime), "PYTHONPATH": str(_REPO)}
+    proc = subprocess.run([sys.executable, "-m", "fsoctl.runner", s.id], env=env,
+                          capture_output=True, text=True, timeout=60, check=False)
+    rec = session.load(s.id)
+    assert proc.returncode == 1 and "Traceback" not in proc.stderr, proc.stderr[-400:]
+    assert rec.status == "failed", rec.status
+    assert "m0a1b2c3d" in json.dumps(dataclasses.asdict(rec))

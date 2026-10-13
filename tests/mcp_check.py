@@ -75,7 +75,8 @@ assert "--interactive" in calls[-1][0] and "--runtime=600" in calls[-1][0]
 S = "s12345678"
 CASES = {
     "launch": dict(mods="MVPS", mission="m.fs2", pilot="existing:P", pilot_source="/tmp/p",
-                   skip_movies=True, interactive=True, runtime=600, extra_args=["-window"]),
+                   skip_movies=True, interactive=True, runtime=600, extra_args=["-window"],
+                   network="real"),
     "status": dict(id=S), "stop": dict(id=S), "list_sessions": {}, "cleanup": {},
     "version": {},
     "screenshot": dict(id=S, crop="10x10+0+0", scale=0.5, full=True),

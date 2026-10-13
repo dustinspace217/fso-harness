@@ -192,12 +192,15 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
            interactive: bool = False, runtime: int = 1800, ready_timeout: float = 240.0,
            extra_args: list[str] | None = None, match: str | None = None,
            role: str | None = None, port: int | None = None, connect: str | None = None,
-           game_name: str | None = None, closed: bool = False) -> str:
+           game_name: str | None = None, closed: bool = False,
+           network: str = "private") -> str:
     """Start a game (or qtFRED) session on a private virtual display; returns its id once ready.
 
     Multiplayer: match_create first, then launch role="standalone" | "host" | "client" with
     match=<id>; each session gets the next free port, clients auto-join `connect` (default the
-    match's server); mission on a host/client starts that mission with no human.
+    match's server); mission on a host/client starts that mission with no human. Every
+    session runs in its own loopback-only network by default (the engine binds its game port
+    on every interface otherwise); network="real" is the opt-out.
 
     pilot: "chooser" | "existing:NAME" (needs pilot_source: a folder holding that pilot's files)
     | "create:NAME". mods: comma-separated mod folders. Startup stages can each be skipped:
@@ -217,7 +220,8 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
             *_opt("qtfred", qtfred), *_opt("binary", binary), *_opt("interactive", interactive),
             f"--runtime={runtime}", f"--ready-timeout={ready_timeout}",
             *_opt("match", match), *_opt("role", role), *_opt("port", port),
-            *_opt("connect", connect), *_opt("game-name", game_name), *_opt("closed", closed)]
+            *_opt("connect", connect), *_opt("game-name", game_name), *_opt("closed", closed),
+            f"--network={network}"]
     if extra_args:
         args += ["--", *extra_args]
     return _ctl(*args, timeout=ready_timeout + LAUNCH_EXTRA_SEC)

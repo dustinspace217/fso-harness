@@ -152,10 +152,19 @@ can be sent to the answer). The holder's death is a loss of the recorded handle,
 network: the engine keeps its namespace alive until it exits and is still stopped through its own
 scope; `status` and `list` say `dead-network`, and the match is written back as `dead` once.
 
-Ordinary sessions are NOT contained: every engine run, single-player included, binds UDP 7808 on
-every interface of the real machine for its whole life (the engine does this unconditionally;
-measured 2026-10-13), so a harness session outside a match is as visible on the LAN as the game
-itself. A private network for every session is a possible later change.
+Every session is contained, not only match sessions: an ordinary single-player session's engine
+runs in its own loopback-only network too (the runner starts the engine under `unshare --user
+--map-root-user --net`; no holder is needed for one session). The engine binds UDP 7808 on every
+interface at startup, single-player included, so without this a harness session was as visible
+on the LAN as the game itself for the whole run (measured 2026-10-13). `launch --network real`
+is the opt-out for the rare case that needs the machine's network; a match session always lives
+in its match. Only the engine is in the namespace: the runner and its Xvfb stay on the host, so
+Xvfb allocates its display number where the host's X tools look for it (X display numbers are
+claimed through the abstract socket, which is per network namespace; an Xvfb inside a namespace
+took the desktop's number as seen from the host). The engine reaches Xvfb through the filesystem
+socket. Requirements: unprivileged user namespaces (some distributions restrict them for
+unconfined programs, Ubuntu's AppArmor setting being one) and `ip` from iproute2; a launch that cannot make the network fails with the reason
+from engine.log and names the opt-out.
 
 Limits of this version: one server (standalone or host) and one mission-carrying session per
 match; a host launched with `--mission` starts its mission at once, so a client cannot join it

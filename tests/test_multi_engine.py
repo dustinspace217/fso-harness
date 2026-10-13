@@ -9,13 +9,14 @@ import os
 import subprocess
 import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
-from fsoctl import launcher, match, session
+from fsoctl import launcher, match, session, xwin
 from fsoctl.errors import HarnessError
 from fsoctl.launcher import LaunchRequest
-from tests.engine_helpers import MODS, wait_hb
+from tests.engine_helpers import MODS, launch_in_mission, wait_hb
 
 pytestmark = pytest.mark.engine
 MP_MISSION = os.environ.get("FSO_TEST_MP_MISSION", "M-01")     # a retail coop mission
@@ -75,7 +76,7 @@ def test_standalone_listens_only_inside_the_match(engine_env, live_match):
     try:
         assert r["role"] == "standalone" and r["port"] == 7808 and r["renderer"] == "none"
         st = launcher.status(r["id"])
-        assert st["listening"] is True and st["network"] == "alive"
+        assert st["listening"] is True and st["match_network"] == "alive"
         assert _listeners(7808) == before_udp               # spec 5.1: nothing new on the LAN side
         assert _listeners(8080, "t") == before_tcp
         prefs = session.prefs_dir(session.load(r["id"]))
@@ -179,7 +180,7 @@ def test_holder_death_is_detected_and_containment_holds(engine_env, live_match):
             time.sleep(0.2)
         assert not match.alive(match.load(m.id))
         st = launcher.status(srv["id"])
-        assert st["network"] == "dead" and st["status"] == "dead-network"
+        assert st["match_network"] == "dead" and st["status"] == "dead-network"
         assert launcher.alive(session.load(srv["id"]))      # the engine itself lives on
         assert _listeners(7808) == before_udp and _listeners(8080, "t") == before_tcp
         assert match.load(m.id).status == "dead"             # written back once (QA SL-7)
@@ -223,7 +224,8 @@ def test_host_role_reaches_gameplay_alone(engine_env, live_match):
         launcher.stop(host["id"])
 
 
-@pytest.mark.xfail(strict=True, reason="a -almission host launches its mission at once, before a "
+@pytest.mark.xfail(strict=True, raises=pytest.fail.Exception,
+                   reason="a -almission host launches its mission at once, before a "
                    "client can load and join, and a client cannot join a mission in progress; "
                    "host-plus-client needs a hold-for-players step (QA TA-2, deferred)")
 def test_client_joins_player_host(engine_env, live_match):
@@ -241,3 +243,61 @@ def test_client_joins_player_host(engine_env, live_match):
         if cli:
             launcher.stop(cli["id"])
         launcher.stop(host["id"])
+
+
+def test_ordinary_sessions_are_private_by_default_and_real_is_opt_in(engine_env, tmp_runtime):
+    """DEF-MP-03 (Option A): an ordinary single-player session no longer binds the engine's UDP
+    port on the real network; --network real is the documented opt-out and does."""
+    _, fso = engine_env
+    before = _listeners(7808)
+    sid = launch_in_mission(fso)
+    try:
+        assert session.load(sid).network == "private"
+        assert _listeners(7808) == before
+    finally:
+        launcher.stop(sid)
+    sid = launch_in_mission(fso, network="real")
+    try:
+        assert _listeners(7808) == before + 1
+    finally:
+        launcher.stop(sid)
+    assert _listeners(7808) == before
+
+
+def _window_pid(display: str, wid: str) -> str:
+    out = subprocess.run(["xprop", "-display", display, "-id", wid, "_NET_WM_PID"],
+                         capture_output=True, text=True, timeout=10, check=False).stdout
+    return out.rsplit("=", 1)[-1].strip()
+
+
+def test_private_session_display_is_reachable_from_the_host(engine_env, tmp_runtime):
+    """The engine window of a private-network session (and of a match client) must be found from
+    the host side on the session's display, and the pid the window carries must be the engine's
+    (so the exec chain unshare -> sh -> exec kept it). Before the fix, Xvfb inside the namespace
+    picked ":1" and the host-side xdotool landed on the desktop's Xwayland (probe 2026-10-13)."""
+    _, fso = engine_env
+    mid = None
+    sids = []
+    try:
+        mid = match.create("display reach").id
+        sids.append(launch_in_mission(fso))
+        sids.append(launcher.launch(LaunchRequest(binary=str(fso), mods=MODS, skip_movies=True,
+                                                  dismiss_popups=True, match=mid, role="client",
+                                                  pilot_mode="create", pilot_name="Alpha"))["id"])
+        for sid in sids:
+            sess = session.load(sid)
+            assert sess.display and sess.engine_pid
+            comm = Path(f"/proc/{sess.engine_pid}/comm").read_text().strip()
+            assert comm == Path(str(fso)).name[:15], comm     # the pid is the engine, not a wrapper
+            deadline = time.monotonic() + 30
+            wins = xwin.windows(sess.display, sess.engine_pid)
+            while not wins and time.monotonic() < deadline:   # bounded: 30 s
+                time.sleep(1)
+                wins = xwin.windows(sess.display, sess.engine_pid)
+            assert wins, f"no engine window on {sess.display} for pid {sess.engine_pid}"
+            assert _window_pid(sess.display, wins[0][0]) == str(sess.engine_pid)
+    finally:
+        for sid in sids:
+            launcher.stop(sid)
+        if mid:
+            launcher.remove_match(mid)

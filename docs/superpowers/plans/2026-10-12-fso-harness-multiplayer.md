@@ -10,20 +10,31 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-12-fso-harness-multiplayer-design.md` (approved 2026-10-12). Parent: `docs/superpowers/specs/2026-10-12-fso-harness-design.md`.
 
-## Status (updated 2026-10-13 00:10 PDT)
-Phase: 11 of 11 BUILT and QA CLOSED (HIGH-RISK, 65 IDs: four Claude seats, two external-model
-seats, mutation classes; manifest check OK; record kept outside this repo)
-Done: all tasks; fix wave in ac31945 (validation), 93da8b7 (lifetime, bridge gating, per-match
-limits, test teeth, docs), b4cea71 (host role on the engine), bca9d0c (Lua tests that never
-ran); unit 744 green, engine tier 8 passed + 1 strict xfail (host-plus-client), mutation
-529/829 scoped with every survivor classed
-Next: merge build/multiplayer into main; curated public publish (publish-export.sh recipe, tell
-scan); re-register the MCP server from the merged checkout and dogfood match_create /
-launch(role=...) over MCP; Dustin's calls on DEF-MP-03 (private network for every session) and
-on the deferments register below
+## Status (updated 2026-10-13 01:15 PDT)
+Phase: 11 of 11 BUILT, QA CLOSED (multiplayer), plus the DEF-MP-03 slice (every session's
+engine in a private network) BUILT on build/private-default and through its own HIGH-RISK QA
+(52 IDs, manifest OK; record kept outside this repo)
+Done: match/role/network slice merged to main and published (6f1817b); private-by-default
+engine with the runner and Xvfb on the host (aa6652c), found and fixed on the way: a namespaced
+Xvfb takes the desktop's display number as seen from the host (DEF-MP-03 appendix entry)
+Next: merge build/private-default into main and publish (Dustin: "Implement, and push to
+github"); re-register the MCP server from the merged checkout; the upstream note on a
+bind-address / no-network engine flag is Dustin's to post
 Blocked: nothing
 
 ## Deviations from the plan as written
+- DEF-MP-03 slice (2026-10-13, behavioral-change, Dustin-approved "I concur with your
+  recommendation"): every session's ENGINE now runs in a private network by default
+  (`--network real` opts out). First built as "runner under unshare + host-side display
+  allocator" (b07f174, a940bf8); the QA found the allocator could not hold a display number for
+  the session's life, so the shipped shape (aa6652c) keeps the runner and Xvfb on the host and
+  wraps only the engine (runner.engine_argv). Effect: an ordinary session no longer binds UDP
+  7808 on the LAN; nothing else a user sees changes. Below the plan's level: which process
+  carries the namespace.
+- Found on the way (2026-10-13, other): the PUBLISHED match clients (6f1817b) had the same
+  display-number collision (their Xvfb ran inside the match namespace); fixed by the same
+  change. The head's probes replaced and then removed the desktop's /tmp/.X11-unix/X1 socket
+  file on Dustin's machine (abstract :1 unaffected; recreated at next login); told him.
 - Task 1: `-nomovies` is required for any probe (the intro movie blocks the frame hook).
 - Task 2: `-almission` belongs to the host player, never the standalone; the spike script carries
   `ALMISSION_ON=client|server` instead of a hand edit; the start-game screen needs an Accept
@@ -1684,11 +1695,27 @@ Then the workspace QA Review runs (HIGH-RISK tier: state-lifetime-auditor with t
   test_client_joins_player_host, strict xfail.
 - DEF-MP-02 (CR-13; LOW): display verbs on a standalone give the xdotool error instead of a
   role-aware refusal. One line in xinput; revisit when a standalone-only agent flow needs it.
-- DEF-MP-03 (SA-3; Dustin's call): every engine session binds UDP 7808 on the real network;
-  matches contain match sessions only. Options: a private network for every session by default,
-  or the documented exposure stands. Recorded in spec section 3, README, probe-results 21.4.
+- DEF-MP-03 (SA-3): RESOLVED 2026-10-13 (Dustin: "I concur with your recommendation"): every
+  session runs in its own loopback-only network by default via the same unshare prefix, no
+  holder for a single session; `--network real` is the opt-out. Engine test
+  test_ordinary_sessions_are_private_by_default_and_real_is_opt_in. Found on the way: Xvfb
+  inside a namespace picked the desktop's display number as seen from the host (also true of
+  the published match clients); the fix keeps the runner and Xvfb on the host and wraps only the
+  engine (runner.engine_argv; engine test test_private_session_display_is_reachable_from_the_host
+  pins the window's pid). The upstream half (a
+  bind-address or no-network engine flag) is a note for Goober's list, Dustin's to post.
 - DEF-MP-04 (XFA-1/XFA-2; MEDIUM): standalone + two clients + mission. The engine refuses an
   unlocked briefing with more than one player and the countdown can start before every
   player's settings ack. Fix direction: probe the cell on FSO_BIN_DEBUG, then a bridge
   "lock loadouts" step or a readiness poll before startCountdown. Test: none yet (the cell is
   unexecuted).
+
+## Appendix: Deferments originated in the DEF-MP-03 slice (QA 2026-10-13)
+- DEF-PN-01 (found by the head's watcher on the fix-wave tiers; aa6652c; defer target: next
+  qtFRED slice; MEDIUM; pre-existing): qtFRED writes FS2PATH/sexps.html on every launch (its help
+  dialog, qtfred/src/mission/dialogs/HelpTopicsDialogModel.cpp:196) because qtfred sessions run
+  with cwd = FS2PATH. Seven writes in the qtfred tier, none in the engine tier; the earlier
+  api_docs failure was the qtfred tier overlapping it. Fix direction: a shadow working folder
+  for qtFRED launches (as api_docs does). Obsolete when qtFRED launches no longer write there.
+- DEF-PN-02 (TA-5; LOW): real x qtfred has no executed cell. Revisit if an agent flow needs
+  the editor on the real network.

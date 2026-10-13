@@ -138,7 +138,8 @@ def launch_request_for(sess: session.Session, binary: str | None = None,
         skip_command_briefing=sw.get("skip_command_briefing", False),
         skip_briefing=sw.get("skip_briefing", False),
         noninteractive=sw.get("noninteractive", True), allow_eval=sess.allow_eval,
-        extra_args=list(sess.extra_args), kind=sess.kind, cwd=_replay_cwd(sess))
+        extra_args=list(sess.extra_args), kind=sess.kind, cwd=_replay_cwd(sess),
+        network=sess.network or "private")   # an old record replays with today's default
 
 
 def _replay_cwd(sess: session.Session) -> str | None:

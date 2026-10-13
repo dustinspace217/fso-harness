@@ -60,6 +60,11 @@ class Session:
     connect: str = "127.0.0.1:7808"
     game_name: str | None = None
     closed: bool = False
+    # "private": the engine runs in its own loopback-only network (the default, DEF-MP-03);
+    # "real": the machine's network; None: a record written before the field existed (its engine
+    # ran on the real network; status shows null rather than a false "private", QA XFA-6).
+    # A match session is always "private" (its match's). The runner reads this field.
+    network: str | None = None
 
 
 def run_dir(sess: Session) -> Path:

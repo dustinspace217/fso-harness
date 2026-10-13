@@ -172,7 +172,7 @@ game (a host given a mission starts it at once, before anyone can join). Host an
 `pilot: "create:<name>"`. The `dismiss_popups` switch leaves the "Joining netgame" box alone
 (its only button is Cancel) and a cancelled join is final. Hostnames still resolve inside a
 match (the host's resolver answers over a local socket) but nothing can be sent to the answer;
-ordinary (non-match) sessions bind UDP 7808 on the real network, as the engine always does. The
+every session, match or not, runs in its own loopback-only network (`network="real"` opts out). The
 standalone's web panel (TCP 8080, basic auth admin/admin, engine defaults) exists only inside
 the match and its mission/netgame copies were stale in testing; do not rely on it. Open
 multiplayer issues: label `multi` upstream; the maintainers' checklist is #6927.

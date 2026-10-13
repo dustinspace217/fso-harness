@@ -83,6 +83,7 @@ class LaunchRequest:
     connect: str | None = None           # client: server IP:PORT; None = the match's live server
     game_name: str | None = None         # host/standalone: shown in the join list; None = match id
     closed: bool = False                 # host: -closed
+    network: str = "private"             # "private" (own loopback-only namespace) | "real"
 
     @property
     def pilot_multi(self) -> bool:
@@ -407,6 +408,46 @@ _MISSION_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 PORT_MIN, PORT_MAX = 1024, 65535
 
 
+NETWORKS = ("private", "real")
+# The ENGINE (not the runner, not Xvfb) starts inside a fresh user+network namespace with only
+# loopback: the engine binds its UDP game port on every interface at startup, single-player
+# included (freespace.cpp game_init -> psnet_init; measured 2026-10-13), so without this every
+# harness session is as visible on the LAN as the game itself for its whole run. No holder is
+# needed for one session: the namespace lives as long as the engine process. WHY only the engine:
+# X display numbers are allocated by Xvfb itself through the ABSTRACT socket, which is per network
+# namespace; an Xvfb inside the namespace took the desktop's number as seen from the host and
+# replaced the host's socket file (QA 2026-10-13), and a host-side allocator could not hold the
+# number for the session's life (SL-1/SA-1/XFA-1). Xvfb on the host owns both its sockets, the
+# engine reaches it through the filesystem socket (probed 2026-10-13: xdpyinfo in a fresh
+# user+net namespace reaches a host Xvfb), and the host's X tools reach it as they always did.
+# Same facts as a match: uid 0 inside maps to the real user; pathname unix sockets cross the
+# boundary; nothing the engine needs is on the real network. `--network real` is the opt-out.
+# The prefix execs the program via "$@" so no argument is re-parsed by the shell and the
+# engine's pid is the pid Popen returns (unshare and sh both exec; probed 2026-10-13).
+PRIVATE_NET_PREFIX = ["unshare", "--user", "--map-root-user", "--net", "sh", "-c",
+                      'ip link set lo up && exec "$@"', "sh"]
+
+
+def _check_network(req: LaunchRequest) -> None:
+    """Refuse (EXIT_USAGE) an unknown network choice, or `real` on a match session (a match
+    session always lives in its match's network; nothing else makes sense)."""
+    if req.network not in NETWORKS:
+        raise HarnessError(EXIT_USAGE, f"unknown --network {req.network!r}",
+                           f"use one of {', '.join(NETWORKS)}")
+    if req.match and req.network != "private":
+        raise HarnessError(EXIT_USAGE, "a match session always runs in its match's network",
+                           "drop --network")
+    if req.network == "private" and not req.match:
+        for tool in ("unshare", "ip"):     # checked here so a missing tool never starts a scope
+            if not shutil.which(tool):
+                raise HarnessError(EXIT_LAUNCH,
+                                   f"cannot make a private network: `{tool}` not found",
+                                   "install util-linux and iproute2, or launch with --network real")
+        if os.geteuid() == 0:              # same rule as match.create (QA SA-5)
+            raise HarnessError(EXIT_REFUSED, "refusing to start a private-network session as root",
+                               "run the harness as an ordinary user")
+
+
 def _check_mission_name(req: LaunchRequest) -> None:
     """Refuse (EXIT_USAGE) a mission value that is not a plain file name, for EVERY game session:
     both -start_mission and -almission would otherwise carry it to the engine's re-split."""
@@ -438,6 +479,7 @@ def _validate(req: LaunchRequest) -> None:
     _check_folders(req)
     _check_extra_args(req)
     _check_mission_name(req)
+    _check_network(req)
     _check_role(req)
     if not isinstance(req.runtime_sec, int) or req.runtime_sec < 1:
         # Every session runs under a hard runtime cap; 0 was never "unlimited" (QA XFK-2).
@@ -488,7 +530,8 @@ def _prepare(req: LaunchRequest,
                                port=assign_port(req.match, req.port) if req.match else None,
                                connect=(req.connect or default_connect(req.match)
                                         if req.match else f"127.0.0.1:{DEFAULT_GAME_PORT}"),
-                               game_name=req.game_name, closed=req.closed)
+                               game_name=req.game_name, closed=req.closed,
+                               network=req.network)
     try:
         if req.kind == "game":
             chan = paths.channel_dir(session.prefs_dir(sess))
@@ -583,12 +626,10 @@ def _start(req: LaunchRequest) -> tuple[session.Session, bool]:
         check_capacity()
         sess, refreshed = _prepare(req, memory_max)
         try:
+            # The runner (and its Xvfb) stay on the host; the runner puts the ENGINE into the
+            # session's network (runner.engine_argv: the match's namespace via nsenter, or its own
+            # via PRIVATE_NET_PREFIX). See the PRIVATE_NET_PREFIX comment for why not the runner.
             runner_argv = [sys.executable, "-m", "fsoctl.runner", sess.id]
-            if sess.match:
-                # The runner, and so Xvfb and the engine, live in the match's network. Only the
-                # network namespace changes: files, the X socket (a filesystem socket) and the
-                # bridge channel are the same as for any session (spec section 4).
-                runner_argv = match.nsenter_prefix(match.load(sess.match)) + runner_argv
             scope.start(sess.scope, runner_argv, _runner_env(),
                         session.run_dir(sess) / "runner.log", props)
         except HarnessError as e:
@@ -656,11 +697,33 @@ def _wait_ready(req: LaunchRequest, sid: str) -> dict:
     if req.role == "standalone":
         _wait_listening(req, sid)
         return {}
-    if req.kind == "game":
-        return channel.Channel(session.load(sid)).wait_ready(
-            req.ready_timeout, lambda: _alive_or_starting(sid))
-    _wait_window(sid, req.ready_timeout)
-    return {}
+    try:
+        if req.kind == "game":
+            return channel.Channel(session.load(sid)).wait_ready(
+                req.ready_timeout, lambda: _alive_or_starting(sid))
+        _wait_window(sid, req.ready_timeout)
+        return {}
+    except HarnessError as e:
+        if e.code != EXIT_ENGINE:
+            raise
+        raise _early_exit_error(sid, e) from None
+
+
+_NAMESPACE_WORDS = ("unshare:", "nsenter:", "ip:")
+
+
+def _early_exit_error(sid: str, err: HarnessError) -> HarnessError:
+    """Turn "the engine exited before it was ready" into an error that says why, from engine.log's
+    tail. The unshare/nsenter/ip prefix runs in front of the engine, so when the private network
+    cannot be made (user namespaces disabled, iproute2 missing) the only evidence is that log line;
+    without this the user got "run crash_report" for an engine that never ran (QA SL-2, TA-4)."""
+    tail = match._log_tail(session.run_dir(session.load(sid)) / "engine.log")
+    if any(w in tail for w in _NAMESPACE_WORDS):
+        return HarnessError(EXIT_LAUNCH,
+                            f"the engine could not start in its private network: {tail}",
+                            "user namespaces or `ip` are unavailable on this host; "
+                            "launch with --network real to use the machine's network")
+    return HarnessError(err.code, err.message, f"{err.hint} (engine.log: {tail})")
 
 
 def _warnings(req: LaunchRequest, found: dict) -> list[str]:
@@ -771,7 +834,7 @@ def status(sid: str) -> dict:
     age = hb.get("age_sec") if hb else None
     network = _network_state(sess)
     out = {**asdict(sess), "alive": alive(sess), "heartbeat": hb, "heartbeat_age_sec": age,
-           "stale": None if age is None else age > STALE_SEC, "network": network,
+           "stale": None if age is None else age > STALE_SEC, "match_network": network,
            "listening": (listening(sess) if sess.role == "standalone" and network == "alive"
                          else None)}
     if network == "dead" and sess.status in ("starting", "running"):
@@ -955,6 +1018,7 @@ def list_all() -> dict:
             status = "dead-network"          # same read-time rule as status() (QA TA-4)
         rows.append({"id": s.id, "kind": s.kind, "status": status, "alive": alive(s),
                      "mission": s.mission, "renderer": s.renderer, "role": s.role,
+                     "network": s.network,
                      "match": s.match})
     return {"sessions": rows}
 
@@ -1106,6 +1170,8 @@ def _configure_launch(p: argparse.ArgumentParser) -> None:
     p.add_argument("--connect", help="client: server IP:PORT (default: the match's live server)")
     p.add_argument("--game-name", help="host/standalone: game name (default: the match id)")
     p.add_argument("--closed", action="store_true", help="host: start the game closed")
+    p.add_argument("--network", choices=NETWORKS, default="private",
+                   help="private: own loopback-only network (default); real: the machine's")
     p.add_argument("extra", nargs="*", help="extra engine arguments, after --")
 
 
@@ -1123,7 +1189,8 @@ def _cli_launch(args: argparse.Namespace) -> dict:
         noninteractive=not args.interactive, allow_eval=args.allow_eval, extra_args=args.extra,
         kind="qtfred" if args.qtfred else "game", runtime_sec=args.runtime,
         ready_timeout=args.ready_timeout, match=args.match, role=args.role, port=args.port,
-        connect=args.connect, game_name=args.game_name, closed=args.closed)
+        connect=args.connect, game_name=args.game_name, closed=args.closed,
+        network=args.network)
     return launch(req)
 
 
