@@ -1,13 +1,12 @@
 # FSO Harness Implementation Plan
 
-## Status (updated 2026-10-12, demo-findings fix wave)
+## Status (updated 2026-10-12 evening, telemetry + collision alerts)
 Phase: post-v1 maintenance (v1 Tasks 1-23 done and published)
-Done: v1; SM1-01 demo findings fixed on branch fix/demo-findings (a8af1df): held click, runner-first
-stop (no core on `stop`; runtime-limit expiry still aborted until the QA fix wave), qtFRED
-SDL_NO_SIGNAL_HANDLERS, screenshot full, new `move`, fred_check note; QA Phase A+B done (26 IDs)
-Next: QA fix wave + Phase C manifest + cross-family pass, then Dustin's re-run of the demo;
-after that the agreed input work: named-action input, relative mouse, keyboard/F-key check (joystick OUT,
-Dustin 2026-10-12)
+Done: v1; demo-findings fix wave + QA; Lua playtest guidance (de45e8c); `lua` pre-send check
+(ROUTINE QA, 70/70); switchable telemetry + collision alerts (HIGH-RISK QA + cross-family closed,
+manifest 58/58; UNCOMMITTED, awaiting Dustin's word to commit)
+Next: Dustin: commit/push, and the Proposal below (throttle after a collision stop); then the
+agreed input work (named-action input, relative mouse, keyboard/F-key; joystick OUT)
 Blocked: nothing
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -3518,3 +3517,66 @@ aborting; qtFRED stops end on SIGTERM. Joystick input: OUT by Dustin's ruling (h
 | DEF-DF-01 | SL-5 | LOW | stop never executed in gameplay, mid-load, with a popup open, on Vulkan, on a debug build, or with a runner stuck past 25 s | the main-hall and qtFRED cells pass, and the runtime-limit cell now has an engine test; each other cell is its own engine scenario | engine tests that stop in each state and assert exit_info.signal is None | `coredumpctl list` after agent loops; revisit on any core whose backtrace shows _XIOError | — |
 | DEF-DF-02 | CR-2 residual | LOW | `click double=true` is not engine-verified on an FSO double-click target (pilot list) | a pilot list needs an existing pilot without auto-select; the harness has no such launch mode | add a launch mode that copies a pilot but stays in the chooser, then double-click it and assert GS_STATE_MAIN_MENU | revisit when a test needs FSO double-click | — |
 | DEF-DF-03 | MU-6 | LOW | surviving mutants in pre-existing branches of the touched functions (screenshot crop/scale argv, stop's missing-session paths, record._issue's other verbs, fred.check's OCR path) | not introduced by this change; same class as DEF-QA-05 | argv asserts per option; per-verb replay tests; OCR path unit tests with captured text | next full mutation run | — |
+
+
+## Post-v1: Lua pre-send check (2026-10-12 evening)
+Dustin: "is there any way to harden the harness so some of them [the MCP instructions] become
+unnecessary? If so, do it. If not, leave the instructions in." The `lua` verb now checks code (and
+absolute-path loadfile/dofile targets, one level) against the build's cached scripting.json and
+refuses unknown members of the checked libraries and colon calls on the no-self control_info
+functions (fsoctl/lua_check.py). Handle types are invisible to it, so those instruction rules stay;
+the INSTRUCTIONS now say what the tool enforces and when it is skipped. Architect: SHIP with
+conditions. QA (ROUTINE): record kept outside this repo.
+
+## Appendix: Deferments originated in the Lua pre-send check QA (ROUTINE, 2026-10-12)
+| ID | Found by | Severity | What was deferred | Why deferred | Fix direction | Detection / revisit | Obsolete when |
+|---|---|---|---|---|---|---|---|
+| DEF-TC-01 | MU-4 | LOW | surviving mutants in pre-existing wait_for and pilot lines (telemetry/collision change) | not introduced by this change | keyword/argv asserts; log-kind wait test; timeout-message asserts | next full mutation run | — |
+| DEF-LC-01 | CR-4 | LOW | the docs cache key is computed per `lua` call from disk (binary hash, mod walk, FS2PATH env), so a binary rebuilt in place under a running session gives the new build's API to the old engine | needs a launch-time field in the session record; today's flows stop sessions before rebuilding | store the cache key (or the docs dir) in session.json at launch and use it in `lua()` | a refusal naming a function the running build does have; revisit if test_engine_change gains rebuild-without-relaunch | session records carry their docs key |
+
+## Post-v1: switchable telemetry and collision alerts (2026-10-12 evening)
+Dustin: "Add the telemetry feature but make it switchable, so the agent only turns it on for runs
+where it's necessary. There should also be better collision avoidance. No human player would allow
+grinding on the hull for so long. You should get an alert on collision along with which direction
+the nearest object is so you can turn and fly away". Architect: SHIP; trims taken (no suggested
+escape, no direction words, one direction, last contact + count). Bridge: `$On Ship Collision`
+handler (player + no weapon/beam, once per frame), engine-run count (never reset, so wait baselines
+stay valid), `pilot` stop reason "collision" (stop_on_collision, default on), `state`
+player.collision/collisions_total, `check` kind collision; `telemetry` command (per-frame ring of
+15000 rows only while on; read = summary + downsampled samples, 120 s / 10 Hz caps; cleared when
+mission time jumps back). Python: telemetry verb, pilot flag, wait kind; MCP: telemetry tool.
+Engine runs on 26.1.0: live-test record kept outside this repo (rows A-O; one mission, one freighter). Probe facts: probe-results section 20.
+
+QA (HIGH-RISK, 4 Opus seats + mutation + two external model seats): record kept outside this repo.
+Deviations from the Architect-approved design, each from a review finding:
+- behavioral-change: collisions count contact STARTS (nothing of that object touched us the
+  previous simulation frame), not frames in contact, so an escape flight is not stopped by the
+  contact it escapes (SLA-1/CR-1); continuity counts gameplay frames so a pause does not split a
+  contact (XFA-4/XFK-1); debris and asteroids are keyed by signature (XFA-1).
+- behavioral-change: a run epoch (other mission file or clock jumping back) replaces the clock-only
+  telemetry clear and hides the previous run's contact from `state` (SLA-3, SF-4, XFA-5).
+- scope-change (small): pilot replies gain `collisions` and `touching`; state gains `touching` and
+  `collision_errors`; check detail gains touching/errors; telemetry replies gain now / last_row_t /
+  cleared / error; heartbeat and bridge_info gain telemetry_on. pilot and check report the latest
+  NEW contact (XFK-3).
+- behavioral-change: player_dead is checked before collision (CR-11); telemetry runs in its own
+  pcall and switches itself off on error (SF-2).
+- scope-change: props are NOT reported (the engine never runs this hook for them,
+  collideshipship.cpp:1664-1690); light debris/asteroid brushes are not reported by the engine.
+- other: game.py `lua()` initialises `ref = None` before its try (a Pyright unbound warning);
+  unrelated to the feature, kept because it is a one-line correctness fix in a touched file.
+- Demo controller (outside the repo): contact reflex via its own collision hook; five review fixes;
+  one bug introduced by those fixes found live and fixed (record row J).
+
+Proposal (open, Dustin's call): after a collision stop the ship keeps its cruise throttle and, in
+smoke row N, drifted into the freighter again before the agent's next call (~7 mission s). Option:
+zero (or briefly reverse) the throttle on a collision stop before handing control back. Tradeoff:
+the bridge would change the player's controls on its own.
+
+Appendix: Deferments originated in this change
+- DEF-TC-01 | found by mutation pass (MU-4) | uncommitted (2026-10-12) | defer: next full mutation
+  run | LOW | 41 surviving mutants in pre-existing lines of the touched functions wait_for (log
+  routing, timeout loop, messages) and pilot (TypeError path, check_pilot_args keywords, the call's
+  session id was pinned now) | not introduced here; minimal-diff | fix: argv/keyword asserts in
+  pilot tests, a log-kind wait test, timeout-message asserts | obsolete if wait_for/pilot are
+  rewritten.

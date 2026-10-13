@@ -13,4 +13,7 @@ $On Dialog Frame: [
 +Override: [
 	return FsoHarness.take_popup_override()
 ]
+$On Ship Collision: [
+	FsoHarness.ship_collision()
+]
 #End

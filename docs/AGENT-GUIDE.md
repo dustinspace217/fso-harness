@@ -77,6 +77,72 @@ runs the same scenario on two builds side by side (write the steps as a scenario
    writes `ba.getControlInfo()` axes (+Heading = nose right, +Pitch = nose down) and fires with
    `ship:firePrimary()` / `fireSecondary()`. Wrap fn's body in `pcall` and give control back
    (`FLIGHT_CONTROL_NORMAL`) on error: an error escaping a hook ends the session.
+5. Lessons from flying SM1-01 this way (probe-results section 19 has the sources):
+   - **pcall does not save you from API mistakes.** A missing name or a wrong argument type
+     throws a C++ exception that ends the engine even inside `pcall`. The `lua` tool refuses the
+     two shapes it can see in the text (an unknown library function such as `ba.getControlMode`,
+     and a colon call on the no-self `control_info` functions), including in files loaded with
+     `loadfile("/abs/path")`, whenever `api_docs` is cached for the build (the reply's `lua_check`
+     says `passed` or `skipped: <why>`). It cannot see handle types, so check handle methods in
+     `api_docs` `scripting.lua`. Compare handles with `getSignature()`, never `.Name`:
+     a ship's `Target` or a weapon's `HomingObject` can be a missile, and reading `.Name` on a
+     weapon is fatal. Read ship-only fields after `getBreedName() == "Ship"`. Call
+     `control_info` functions with a dot (`ci.useButtonControl(-1, "SHIELD_EQUALIZE")`); a colon
+     passes the handle as argument 1 and aborts the engine.
+   - **Player keys from Lua:** `ci.useButtonControl(-1, name)` presses any one-shot bound control
+     (names: `plr_commands` in control_info.cpp, e.g. TARGET_NEXT_CLOSEST_HOSTILE, SHIELD_EQUALIZE,
+     INCREASE_WEAPON, LAUNCH_COUNTERMEASURE, END_MISSION) after
+     `ba.setButtonControlMode(BUTTON_CONTROL_LUA_ADDITIVE)`. Call `ci:clearLuaButtonInfo()` at the
+     start of each frame, or a press repeats. Held controls (trigger, afterburner) do not go through
+     this path, and under LUA_FULL the control_info trigger counts are ignored: fire with
+     `firePrimary()`.
+   - **Steering:** world to ship-local is `orientation:rotateVector` (unrotate is the reverse); dot
+     products with `getRvec/getUvec/getFvec` cannot be mixed up. The stick sets turn rate = stick x
+     max rate, which the ship reaches with a lag, so pure proportional steering overshoots and
+     wiggles. `Physics.RotationalVelocity` (ship-local, same signs as the stick) is the damping
+     input. Bank to turn works with bank = -phi, where phi = atan2(x, y) of the target in ship
+     coordinates: one flight held phi near 0 degrees. A re-decided-every-frame avoid manoeuvre
+     yo-yos, so commit to it. Measured honestly: one flight with damping (KD 0.6), bank-to-turn
+     and committed avoids hit 27% of primaries against 35% for plain proportional steering. Not a
+     proven improvement; tune and compare over several runs before relying on it.
+   - **Frame rate:** the software renderer runs about 20-28 fps, and a controller acts once per
+     frame. Time compression divides its control rate by the same factor, so keep compression at
+     100 while it flies.
+   - **Missile lock is not exposed to Lua.** After firing, check that your missile's `HomingObject`
+     is set. **Hull distance:** `ship:checkRayCollision(from, to)` returns the hit point; a capital
+     ship's `Radius` is a bounding sphere and useless for range.
+   - **Reloadable controller:** make the hook call a global (`A1.fly`) so running the file again
+     replaces the logic without stacking a second hook.
+6. **Collisions.** The bridge catches the player's contacts with ships, debris and asteroids
+   (weapon hits are not contacts; the engine skips very light debris or asteroid brushes and
+   never reports props to this hook). A contact counts once when it starts, not once per frame
+   of grinding. `pilot` stops
+   at once on a new contact: `stopped_because: "collision"`, and `collision.direction` is the
+   contact point in the ship's own axes (`right`, `up`, `forward`, unit length; null if the
+   engine gave no point). Steer the other way, reversing if the contact is ahead, then fly off:
+   the escape flight is not stopped by the contact it is escaping, and its reply's `touching`
+   says whether you are still in contact. `state` shows the contact under `player.collision` for
+   5 mission seconds of the current run (`new` false means a contact still going on), with
+   `player.collisions_total`, `player.touching` and `player.collision_errors` (above 0 means the
+   collision hook failed; read `bridge_info` last_error).
+   `wait_for` kind `collision` (any value) waits for the next new contact, which is how to catch
+   one during autopilot or your own controller. `stop_on_collision=false` keeps a `pilot` flight
+   going (a deliberate ram); its reply still counts `collisions`. The collision hook is always on
+   in every engine the harness launches; it only reads, so engine behaviour is unchanged (worth
+   knowing when the change under test is collision code).
+7. **Telemetry** (off unless switched on; it costs work every frame; `on` starts a fresh
+   recording, dropping earlier rows): `telemetry on` before the
+   part of the run you want to measure, `telemetry read` (seconds up to 120, hz up to 10) for a
+   summary and samples, `telemetry off` after. The summary has aim error to the target's centre
+   (a controller leading a moving target is off-centre on purpose, so read it as a trend), the
+   share of frames within 3 degrees, wiggle (turn-rate sign flips per second; under ~0.5 is
+   smooth), peak turn rate, mean speed and contacts. In samples, aim and distance read -1 when
+   there is no target; with no rows there is no summary, and fps and wiggle are null with fewer
+   than two. "Per second" means per mission second (divide by the time compression for real
+   time; `frame_stats` measures real frame times). Every reply carries
+   `error` (an error switches telemetry off), `cleared` (a new mission run emptied it) and
+   `last_row_t` beside `now` (a gap means rows stopped, e.g. no player ship). 60 s at 1 Hz is
+   about 4.6 KB.
 
 ## Read a crash
 

@@ -230,6 +230,16 @@ def _cache_valid(dest: Path) -> bool:
         return False
 
 
+def cached_reference(binary: str, mods: list[str]) -> Path | None:
+    """Return this build's reference folder if a complete cache already exists, else None.
+
+    Never generates (that launches the engine); the `lua` verb's pre-send check uses this and
+    reports itself skipped when it returns None.
+    """
+    dest = cache_dir(binary, mods)
+    return dest if _cache_valid(dest) else None
+
+
 def api_docs(binary: str | None = None, mods: list[str] | None = None,
              refresh: bool = False) -> dict:
     """Return {"dir", "files", "cached"} for this build's reference, generating it if needed."""

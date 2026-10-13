@@ -12,9 +12,9 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from . import channel, launcher, logs, session
+from . import channel, docs, launcher, logs, lua_check, session
 from .cli import register
-from .errors import EXIT_ENGINE, EXIT_REFUSED, EXIT_TIMEOUT, EXIT_USAGE, HarnessError
+from .errors import EXIT_BRIDGE, EXIT_ENGINE, EXIT_REFUSED, EXIT_TIMEOUT, EXIT_USAGE, HarnessError
 
 _MODES = ("eval", "run", "number")
 _LIST_LIMIT_MAX = 1000
@@ -106,9 +106,30 @@ def _gate(sid: str, kind: str, text: str) -> None:
 
 
 def lua(sid: str, code: str) -> dict:
-    """Run free-form Lua in the engine (opt-in, audited); returns {"value": tostring(result)}."""
+    """Run free-form Lua in the engine (opt-in, audited); returns {"value": tostring(result)}.
+
+    Before sending, the code (and files it loadfile()s) is checked against this build's cached
+    API reference for the mistakes that abort the engine past pcall (fsoctl/lua_check.py); the
+    reply's "lua_check" says whether the check ran.
+    """
     _gate(sid, "lua", code)
-    return call(sid, "lua", {"code": code})
+    sess = _require_game(sid)
+    # The check is an extra: if anything in it fails (no FS2PATH, a binary being rebuilt, a
+    # damaged cache), send the code as before and say why the check did not run (QA CR-3).
+    ref = None
+    try:
+        ref = docs.cached_reference(sess.binary, sess.mods)
+        found, unchecked = lua_check.check(code, ref / "scripting.json") if ref else ([], [])
+        status = "passed" if ref else "skipped: no api_docs cache for this build"
+    except Exception as e:   # deliberate fail-open (see above); the reply carries the reason
+        found, unchecked, status = [], [], f"skipped: check error: {e}"
+    if found:
+        raise HarnessError(EXIT_REFUSED, "Lua refused before sending (it would abort the engine): "
+                           + "; ".join(found), f"names checked against {ref}/scripting.json "
+                           "(readable form: scripting.lua next to it)")
+    reply = call(sid, "lua", {"code": code})
+    reply["lua_check"] = status + (f" (not checked: {', '.join(unchecked)})" if unchecked else "")
+    return reply
 
 
 def post_event(sid: str, name: str) -> dict:
@@ -149,6 +170,12 @@ class Flight:
     secondary: bool = False
     cm: bool = False
     seconds: float = 1.0
+    # A NEW contact with a ship, debris or an asteroid ends the flight at once
+    # (stopped_because "collision", with the direction to what was hit), the way a pilot reacts
+    # (Dustin 2026-10-12). Contact that began before the flight does not stop it, so an escape
+    # flight can fly off (QA SLA-1). The engine does not report very light debris or asteroid
+    # brushes (below its damage threshold), so neither does this (QA CR-4).
+    stop_on_collision: bool = True
 
 
 def pilot(sid: str, **controls: Any) -> dict:
@@ -156,7 +183,10 @@ def pilot(sid: str, **controls: Any) -> dict:
 
     Receives Flight's fields as keywords (pitch=1.0, primary=True, seconds=2, ...). primary and
     secondary fire every frame (the weapon's own refire rate applies); cm launches countermeasures.
-    Returns {"applied_frames", "shots", "mission_time"}.
+    Returns {"applied_frames", "shots", "mission_time", "completed", "stopped_because",
+    "collisions", "collision", "touching"}: collisions = contacts started during the flight,
+    collision (or null) the latest one with its direction in the ship's own axes, touching
+    whether the ship is still in contact when the flight ends.
     """
     try:
         flight = Flight(**controls)
@@ -165,6 +195,11 @@ def pilot(sid: str, **controls: Any) -> dict:
         raise HarnessError(EXIT_USAGE, f"bad pilot argument: {e}", f"use {fields}") from e
     check_pilot_args(pitch=flight.pitch, heading=flight.heading, bank=flight.bank,
                      forward=flight.forward, seconds=flight.seconds)
+    # The bridge only skips the stop for a literal false, so "false" or 0 would still stop on
+    # contact: refuse anything but a bool (QA CR-10).
+    if not isinstance(flight.stop_on_collision, bool):
+        raise HarnessError(EXIT_USAGE, "stop_on_collision must be true or false",
+                           f"got {flight.stop_on_collision!r}")
     try:
         return call(sid, "pilot", asdict(flight), timeout=_pilot_timeout(flight.seconds))
     except HarnessError as e:
@@ -232,8 +267,30 @@ def set_time(sid: str, compression: float | None = None, pause: bool = False,
     return call(sid, "time", {"compression": compression, "pause": pause, "resume": resume})
 
 
+_TELEMETRY_ACTIONS = ("on", "off", "read", "clear")
+
+
+def telemetry(sid: str, action: str, seconds: float = 10.0, hz: float = 2.0) -> dict:
+    """Switch per-frame flight telemetry on or off, read it, or clear it.
+
+    WHY switchable: recording costs work every frame, and most runs do not need it (Dustin
+    2026-10-12). While on, the bridge keeps the last 15000 frames (nose vector, turn rates as a
+    fraction of max, speed, aim error to the current target, hull). `read` returns a summary
+    (aim error, % of frames within 3 degrees, wiggle = turn-rate sign flips per second) plus
+    samples at `hz` over the last `seconds`: at most 120 s x 10 Hz, so a read stays small.
+    `on` starts a fresh recording (earlier rows are dropped).
+    """
+    if action not in _TELEMETRY_ACTIONS:
+        raise HarnessError(EXIT_USAGE, f"bad telemetry action {_clip(action)!r}",
+                           f"use one of {', '.join(_TELEMETRY_ACTIONS)}")
+    if not (0.1 <= seconds <= 120 and 0.1 <= hz <= 10):
+        raise HarnessError(EXIT_USAGE, f"telemetry seconds {seconds} / hz {hz} out of range",
+                           "seconds 0.1-120, hz 0.1-10")
+    return call(sid, "telemetry", {"action": action, "seconds": seconds, "hz": hz})
+
+
 _WAIT_KINDS = ("state", "mission_time", "event_true", "event_false", "destroyed", "departed",
-               "goal", "log")
+               "goal", "log", "collision")
 _WAIT_MAX_SEC = 3600.0
 
 
@@ -346,14 +403,33 @@ def _poll_once(sid: str, kind: str, value: Any, log: dict | None) -> tuple[bool,
     return hit is not None, hit
 
 
+def _collision_baseline(sid: str) -> int:
+    """Return the engine-run contact count now, the baseline a collision wait compares against.
+
+    Receives the session id. Raises EXIT_BRIDGE when the reply has no count, which is what a
+    bridge older than collision alerts answers (QA SF-9: a raw index gave a TypeError traceback).
+    """
+    base = call(sid, "check", {"kind": "collision", "value": -1}, timeout=10)
+    detail = base.get("detail")
+    total = detail.get("total") if isinstance(detail, dict) else None
+    if not isinstance(total, int) or isinstance(total, bool):
+        raise HarnessError(EXIT_BRIDGE,
+                           f"the bridge reported no collision count: {_clip(str(base))}",
+                           "the loaded bridge may predate collision alerts; stop and launch again")
+    return total
+
+
 def wait_for(sid: str, kind: str, value: Any, timeout: float = 60.0, poll: float = 0.25) -> dict:
     """Block until a condition holds; return {"met": True, "after_sec", "detail"}.
 
     Kinds: state (name), mission_time (seconds, met when reached), event_true / event_false
     (event name), goal ("Name=complete|failed|incomplete"), destroyed / departed (ship or wing),
-    log (Python regex on lines written after the call). Bounded by timeout (max 3600 s); an engine
-    that exits ends the wait at once with EXIT_ENGINE. Event and ship names with sexp delimiters
-    are refused (check_wait_name). Every kind but log needs a game session (it asks the bridge).
+    log (Python regex on lines written after the call), collision (any value; met once the player
+    starts a new contact after the call; detail.last is the latest contact when the poll saw it,
+    detail.touching whether still in contact). Bounded by timeout (max
+    3600 s); an engine that exits ends the wait at once with EXIT_ENGINE. Event and ship names
+    with sexp delimiters are refused (check_wait_name). Every kind but log needs a game session
+    (it asks the bridge).
     """
     check_wait_kind(kind)
     sess = launcher.require_running(sid) if kind == "log" else _require_game(sid)
@@ -362,6 +438,8 @@ def wait_for(sid: str, kind: str, value: Any, timeout: float = 60.0, poll: float
     log = None
     if kind == "log":
         log = {"pattern": _compile(str(value)), "cursor": _log_start(sess)}
+    if kind == "collision":   # the value is ignored: met by the next new contact after this call
+        value = _collision_baseline(sid)
     start = time.monotonic()
     detail = None
     while time.monotonic() - start < timeout:
@@ -372,7 +450,8 @@ def wait_for(sid: str, kind: str, value: Any, timeout: float = 60.0, poll: float
         if met:
             return {"met": True, "after_sec": round(time.monotonic() - start, 2), "detail": detail}
         time.sleep(poll)
-    raise HarnessError(EXIT_TIMEOUT, f"{kind} {_clip(str(value))!r} not met in {timeout:.0f}s "
+    what = "a new contact" if kind == "collision" else repr(_clip(str(value)))
+    raise HarnessError(EXIT_TIMEOUT, f"{kind} {what} not met in {timeout:.0f}s "
                        f"(last: {_clip(str(detail))})",
                        "take a screenshot or check `fsoctl state`")
 
@@ -452,6 +531,8 @@ def _cfg_pilot(p: argparse.ArgumentParser) -> None:
     p.add_argument("--secondary", action="store_true")
     p.add_argument("--cm", action="store_true", help="launch countermeasures")
     p.add_argument("--seconds", type=float, default=1.0, help="mission seconds, 0.05-60")
+    p.add_argument("--no-stop-on-collision", dest="stop_on_collision", action="store_false",
+                   help="keep flying through a contact (default: stop and report it)")
 
 
 @register("pilot", "fly the player ship for a few seconds", _cfg_pilot)
@@ -459,7 +540,7 @@ def _cli_pilot(args: argparse.Namespace) -> dict:
     """CLI wrapper for pilot()."""
     return pilot(args.id, pitch=args.pitch, heading=args.heading, bank=args.bank,
                  forward=args.forward, primary=args.primary, secondary=args.secondary,
-                 cm=args.cm, seconds=args.seconds)
+                 cm=args.cm, seconds=args.seconds, stop_on_collision=args.stop_on_collision)
 
 
 def _cfg_autopilot(p: argparse.ArgumentParser) -> None:
@@ -488,11 +569,26 @@ def _cli_time(args: argparse.Namespace) -> dict:
     return set_time(args.id, args.compression, args.pause, args.resume)
 
 
+def _cfg_telemetry(p: argparse.ArgumentParser) -> None:
+    """Add the `telemetry` verb's arguments."""
+    p.add_argument("id")
+    p.add_argument("action", choices=_TELEMETRY_ACTIONS)
+    p.add_argument("--seconds", type=float, default=10.0, help="read window, 0.1-120")
+    p.add_argument("--hz", type=float, default=2.0, help="read sample rate, 0.1-10")
+
+
+@register("telemetry", "per-frame flight telemetry: on, off, read, clear", _cfg_telemetry)
+def _cli_telemetry(args: argparse.Namespace) -> dict:
+    """CLI wrapper for telemetry()."""
+    return telemetry(args.id, args.action, args.seconds, args.hz)
+
+
 def _cfg_wait(p: argparse.ArgumentParser) -> None:
     """Add the `wait_for` verb's arguments."""
     p.add_argument("id")
     p.add_argument("kind", choices=_WAIT_KINDS)
-    p.add_argument("value", help="state name, seconds, event/ship name, Goal=status, or regex")
+    p.add_argument("value", help="state name, seconds, event/ship name, Goal=status, regex, "
+                   "or anything for collision")
     p.add_argument("--timeout", type=float, default=60.0)
 
 

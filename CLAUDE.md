@@ -21,6 +21,12 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
 - **Startup handoff file is `switches.txt`**: OpenGL startup deletes `*.json`/`*.bin` in mod cache
   folders.
 - **Lua flight control needs `FLIGHT_CONTROL_LUA_FULL`**; fire with `ship:firePrimary()` etc.
+- **Agent-written Lua can abort the engine past `pcall`** (missing name, wrong argument type,
+  `.Name` on a non-ship handle, colon calls on `control_info`; probe-results section 19). Facts an
+  agent needs while it plays go where agents read them: the MCP INSTRUCTIONS (2,048-character cap,
+  checked in tests/mcp_check.py) and AGENT-GUIDE recipes (the server's prompts). The probe-results
+  doc is the evidence, not the delivery: 2026-10-12's demo hit `rotateVector` and 1-based
+  `getGameDifficulty`, both already recorded in section 18 that the agent never read.
 - **qtFRED** only ever opens a copy of a mission; its editor is the window titled with the mission
   file name (found by pid; the first window is a splash); needs `-noninteractive`.
 - **Pointer input is window-relative** (`mousemove --window`): windows are not at 0,0.

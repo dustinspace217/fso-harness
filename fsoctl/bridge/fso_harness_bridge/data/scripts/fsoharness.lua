@@ -310,7 +310,7 @@ function heartbeat()
 		version = H.VERSION, frame = H.frames, state = H.state_name(),
 		mission_time = mn.getMissionTime(), mission = mn.getMissionFilename(),
 		popup = H.popup or json.null, errors = H.errors, last_error = H.last_error or json.null,
-		switches = H.switch_status,
+		switches = H.switch_status, telemetry_on = H.telem.on,
 	}))
 end
 
@@ -356,6 +356,10 @@ local function frame_body(in_dialog)
 	-- began. Counted here, inside the frame's pcall, because reading the state can fail (CR2-7).
 	if not in_dialog and H.state_name() == "GS_STATE_GAME_PLAY" then
 		H.gameplay_frames = H.gameplay_frames + 1
+		-- Own pcalls: neither may stop the commands and timers below (QA SF-2).
+		local ok, err = pcall(H.track_run)
+		if not ok then H.note_error(err) end
+		H.telemetry_frame()
 	end
 	if in_dialog then
 		H.popup = (hv.Text and tostring(hv.Text)) or "(popup without text)"
@@ -387,6 +391,7 @@ H.handlers.ping = function() return { pong = true, frame = H.frames } end
 H.handlers.bridge_info = function()
 	return { version = H.VERSION, switches = H.switches, allow_eval = H.allow_eval,
 	         errors = H.errors, last_error = H.last_error or json.null, events = H.events,
+	         telemetry_on = H.telem.on,
 	         switch_status = H.switch_status }
 end
 
@@ -575,7 +580,13 @@ H.handlers.state = function(args)
 	              mission_time = mn.getMissionTime(), paused = H.state_name() == "GS_STATE_GAME_PAUSED",
 	              popup = H.popup or json.null, ships = {}, goals = {}, events = {}, player = json.null }
 	if not mn.isInMission() then return out end
-	if hv.Player and hv.Player:isValid() then out.player = ship_entry(hv.Player) end
+	if hv.Player and hv.Player:isValid() then
+		out.player = ship_entry(hv.Player)
+		out.player.collision = H.recent_collision() or json.null
+		out.player.collisions_total = H.collisions_total
+		out.player.touching = H.touching()
+		out.player.collision_errors = H.collision_errors
+	end
 	add_lists(out, args)
 	return out
 end
@@ -690,11 +701,19 @@ H.PILOT_FPS_BOUND = 120
 -- the pause screen, any other state over the flight, and dialog frames (QA finding SL2-4): mission
 -- time stops there, so the flight would otherwise hold the controls until a cancel arrived, and
 -- the pilot's input would resume, out of date, after the pause.
-local function flight_stop_reason(stop_at, ticks, max_ticks)
+-- `collisions_at_start` is nil when the caller asked to keep flying through contacts.
+local function flight_stop_reason(stop_at, ticks, max_ticks, collisions_at_start)
 	if not mn.isInMission() then return "mission_end" end
+	-- Death first: a ram that kills the player is reported as player_dead, not as a contact to
+	-- steer away from (QA CR-11).
+	if not (hv.Player and hv.Player:isValid()) then return "player_dead" end
+	-- A NEW contact during the flight hands control back at once, the way a pilot reacts, with
+	-- the direction to what was hit in the reply. Contact that began before the flight (still
+	-- grinding) does not count, so an escape flight can fly off (QA SLA-1). Before "time" so a
+	-- contact on the last tick is still reported.
+	if collisions_at_start and H.collisions_total > collisions_at_start then return "collision" end
 	if mn.getMissionTime() >= stop_at then return "time" end
 	if H.in_dialog or H.state_name() ~= "GS_STATE_GAME_PLAY" then return "paused" end
-	if not (hv.Player and hv.Player:isValid()) then return "player_dead" end
 	if ticks > max_ticks then return "frame_limit" end
 	return nil
 end
@@ -721,6 +740,8 @@ H.handlers.pilot = function(args, seq)
 	local stop_at = mn.getMissionTime() + seconds
 	local max_ticks = math.ceil((seconds * 10 + 10) * H.PILOT_FPS_BOUND)
 	local frames, shots, ticks, over = 0, 0, 0, false
+	local start_total = H.collisions_total
+	local collisions_at_start = args.stop_on_collision ~= false and start_total or nil
 	ba.setControlMode(FLIGHT_CONTROL_LUA_FULL)
 	H.piloting = true
 	local function stop(reason)
@@ -729,14 +750,20 @@ H.handlers.pilot = function(args, seq)
 		restore_control()
 		H.reply(seq, true, { applied_frames = frames, shots = shots,
 		                     mission_time = mn.getMissionTime(),
-		                     completed = reason == "time", stopped_because = reason })
+		                     completed = reason == "time", stopped_because = reason,
+		                     -- Contacts started during the flight and the latest one, also
+		                     -- when it kept flying through them (QA CR-5).
+		                     collisions = H.collisions_total - start_total,
+		                     collision = H.collisions_total > start_total and H.last_new_collision
+		                                 or json.null,
+		                     touching = H.touching() })
 	end
 	H.flight = { seq = seq, stop = stop }
 	H.timers[#H.timers + 1] = {
 		tick = function()
 			if over then return true end           -- already stopped by pilot_cancel
 			ticks = ticks + 1
-			local reason = flight_stop_reason(stop_at, ticks, max_ticks)
+			local reason = flight_stop_reason(stop_at, ticks, max_ticks, collisions_at_start)
 			if reason then
 				stop(reason)
 				return true
@@ -884,6 +911,12 @@ H.handlers.check = function(args)
 	if kind == "mission_time" then
 		return { met = mn.getMissionTime() >= (tonumber(v) or 0), detail = mn.getMissionTime() }
 	end
+	if kind == "collision" then   -- met once the engine-run count passes the caller's baseline
+		return { met = H.collisions_total > (tonumber(v) or 0),
+		         detail = { total = H.collisions_total, last = H.last_new_collision or json.null,
+		                    touching = H.touching(), errors = H.collision_errors,
+		                    last_error = H.collision_last_error or json.null } }
+	end
 	if not mn.isInMission() then return { met = false, detail = "not in mission: " .. H.state_name() } end
 	local met, detail = check_in_mission(kind, v)
 	return { met = met == true, detail = detail }
@@ -906,6 +939,340 @@ H.handlers.clock = function()
 	if mn.isInMission() then mt = mn.getMissionTime() end
 	return { frametime_overall = ba.getFrametimeOverall(), mission_time = mt,
 	         gameplay_frames = H.gameplay_frames }
+end
+
+-- ---- collision alerts and telemetry (2026-10-12, Dustin: "You should get an alert on collision
+-- along with which direction the nearest object is so you can turn and fly away"; "make it
+-- switchable, so the agent only turns it on for runs where it's necessary") ---------------------
+-- Vector maths here reads .x/.y/.z only (no engine vector operators), so it means the same on an
+-- engine vector and on the unit tier's plain tables.
+
+-- Small vector helpers for plain {x, y, z} tables and engine vectors alike.
+-- sub3(a, b): a - b. dot3(a, b): dot product. len3(a): length. r2(v): v rounded to 2 decimals.
+local function sub3(a, b) return { x = a.x - b.x, y = a.y - b.y, z = a.z - b.z } end
+local function dot3(a, b) return a.x * b.x + a.y * b.y + a.z * b.z end
+local function len3(a) return math.sqrt(dot3(a, a)) end
+local function r2(v) return math.floor(v * 100 + 0.5) / 100 end
+
+-- World vector `w` in the player ship's own axes, as {right, up, forward}. With `unit` true the
+-- result is normalised, and a zero vector gives nil: it has no direction, and {0,0,0} would read
+-- as one (QA SF-5a).
+local function ship_local(ship, w, unit)
+	local o = ship.Orientation
+	local x, y, z = dot3(w, o:getRvec()), dot3(w, o:getUvec()), dot3(w, o:getFvec())
+	local n = 1
+	if unit then
+		n = math.sqrt(x * x + y * y + z * z)
+		if n == 0 then return nil end
+	end
+	return { right = r2(x / n), up = r2(y / n), forward = r2(z / n) }
+end
+
+-- Run epoch: goes up each time a new run of a mission starts (another mission file, or the same
+-- one restarted, which makes its clock jump back). Contacts and telemetry rows remember the epoch
+-- they were recorded in, so after a restart `state` never shows the previous run's contact and
+-- telemetry never mixes two timelines (QA SLA-3, SF-4). One detector serves both, so they cannot
+-- disagree (QA Phase B). Called from the collision hook, every gameplay frame and each telemetry
+-- command; repeat calls within one frame change nothing.
+H.run_epoch = 0
+H.run_mark = { mission = nil, t = -1 }
+function H.track_run()
+	local m, t = mn.getMissionFilename(), mn.getMissionTime()
+	local R = H.run_mark
+	if m ~= R.mission or t < R.t - 0.001 then
+		if R.mission ~= nil then H.run_epoch = H.run_epoch + 1 end
+		H.contact_cur, H.contact_prev, H.contact_frame = {}, {}, nil
+	end
+	R.mission, R.t = m, t
+end
+
+-- Contacts the player STARTED, counted over the whole engine run. WHY starts and not contact
+-- frames: the engine re-tests an overlapping pair every frame with no cooldown
+-- (collideshipship.cpp:1525/1541), so a ship grinding along a hull fires the hook every frame.
+-- Counting every frame made `pilot` stop on the first frame of an escape that began while still
+-- touching, trapping the agent on the hull (QA SLA-1 / CR-1). A contact counts when its object
+-- touched nothing of ours in the previous simulation frame, or is a different object.
+-- WHY never reset: a wait_for compares against the count it saw when it started, so a reset
+-- would make that baseline stale (Architect audit).
+H.collisions_total = 0
+H.collision_errors = 0          -- collision-hook errors, shown in `state` and `check` (QA SF-3)
+H.collision_last_error = nil
+H.last_collision = nil          -- the latest contact frame's record, new contact or ongoing
+H.last_new_collision = nil      -- the latest NEW contact (what pilot and check report)
+H.COLLISION_SHOW_SEC = 5        -- `state` shows the last contact for this many mission seconds
+-- Contact sets keyed by object: this simulation frame's (contact_cur, for H.gameplay_frames
+-- value contact_frame) and the previous simulation frame's (contact_prev). WHY gameplay_frames
+-- identifies a simulation frame: it goes up on each gameplay On Frame, which the engine runs
+-- after each simulation (2d.cpp:3283-3289), and the hook runs inside the simulation (QA P3).
+-- Not H.frames: that also counts paused and dialog frames, which have no simulation, so a pause
+-- while touching would have turned the same contact into a new one (cross-family XFA-4).
+H.contact_cur, H.contact_prev, H.contact_frame = {}, {}, nil
+
+-- True while the player is in contact: the latest simulation frame had a contact. Read after a
+-- gameplay frame, the last simulation stored gameplay_frames - 1 (the counter goes up after it).
+function H.touching()
+	return H.contact_frame ~= nil and H.contact_frame >= H.gameplay_frames - 1
+end
+
+-- Object hit by the player in this hook call: (valid ship or nil, kind, key for the contact sets).
+-- Keys use getSignature, which ships, debris and asteroids all have (each handle type derives
+-- from object: debris.cpp:16, asteroid.cpp:14, object.cpp:344), so two asteroids touched one
+-- after the other are two contacts (cross-family XFA-1). Props are not here: their collision path
+-- only asks this hook whether it overrides and never runs it (collideshipship.cpp:1664-1690,
+-- XFA-2), and an override would change the collision itself.
+local function contact_object(other)
+	if other and other:isValid() then return other, "ship", "ship " .. tostring(other:getSignature()) end
+	-- "unknown" is usually a ship destroyed in this very frame (handle no longer valid); two such
+	-- in one frame share this key and count once, which is rare and bounded (XFK-8).
+	local kind = (hv.Debris and "debris") or (hv.Asteroid and "asteroid") or "unknown"
+	local obj = hv.Debris or hv.Asteroid
+	if obj and obj:isValid() then return nil, kind, kind .. " " .. tostring(obj:getSignature()) end
+	return nil, kind, kind
+end
+
+-- "On Ship Collision" handler (fsoharness-sct.tbm). Probe 2026-10-12 (session sd270dbee): the hook
+-- also fires for every weapon hit on any ship (hv.Weapon set) and twice per ship-ship contact
+-- (Ship and ShipB swapped), so only contacts that include the player and no weapon or beam count.
+-- hv[...] of a variable this hook did not set is nil (hookvars.cpp indexer), so each read is
+-- safe; hv.Ship and hv.ShipB are ship-typed, so their .Name exists.
+local function on_ship_collision()
+	if hv.Weapon ~= nil or hv.Beam ~= nil then return end
+	local me = hv.Player
+	if not (me and me:isValid()) then return end
+	local sig, a, b = me:getSignature(), hv.Ship, hv.ShipB
+	local other
+	if a and a:isValid() and a:getSignature() == sig then other = b
+	elseif b and b:isValid() and b:getSignature() == sig then other = a
+	else return end
+	H.track_run()
+	local f = H.gameplay_frames
+	if H.contact_frame ~= f then
+		H.contact_prev = (H.contact_frame == f - 1) and H.contact_cur or {}
+		H.contact_cur, H.contact_frame = {}, f
+	end
+	local ship, kind, key = contact_object(other)
+	if H.contact_cur[key] then return end          -- the swapped second call for this contact
+	-- Every engine call site passes Hitpos (collideshipship.cpp:1421/1433, collidedebrisship.cpp
+	-- :193/380); without one the direction is null rather than invented (QA CR-7, SF-5a).
+	local point = hv.Hitpos
+	local c = {
+		frame = f, epoch = H.run_epoch, mission = mn.getMissionFilename(),
+		mission_time = r2(mn.getMissionTime()), other = ship and ship.Name or json.null,
+		other_kind = kind,
+		direction = (point and ship_local(me, sub3(point, me.Position), true)) or json.null,
+		hull_pct = r2(me.HitpointsLeft * 100 / me.HitpointsMax),
+		speed = r2(len3(me.Physics.Velocity)),
+	}
+	-- Everything is updated only after the record built, so an error building it changes no
+	-- count and no dedupe set (QA SF-1); the swapped second call then tries again.
+	H.contact_cur[key] = true
+	c.new = not H.contact_prev[key]
+	if c.new then H.collisions_total = H.collisions_total + 1 end
+	c.count = H.collisions_total
+	H.last_collision = c
+	-- pilot and check report the contact that raised the count, not one still grinding beside it
+	-- (cross-family XFK-3: grinding A while B hits would have named A).
+	if c.new then H.last_new_collision = c end
+end
+
+-- Hook entry point: an error is counted and kept for `state` and `check`, never raised.
+function H.ship_collision()
+	local ok, err = pcall(on_ship_collision)
+	if not ok then
+		H.collision_errors = H.collision_errors + 1
+		H.collision_last_error = tostring(err)
+		H.note_error(err)
+	end
+end
+
+-- The last contact if it belongs to this run of this mission and is at most COLLISION_SHOW_SEC
+-- mission seconds old, else nil. Used by `state`.
+function H.recent_collision()
+	local c = H.last_collision
+	if not c or c.epoch ~= H.run_epoch or c.mission ~= mn.getMissionFilename() then return nil end
+	-- mission_time is stored rounded to 0.01 s, so a contact from this very frame can read up to
+	-- 0.005 s in the future (cross-family XFA-6).
+	local age = mn.getMissionTime() - c.mission_time
+	if age < -0.01 or age > H.COLLISION_SHOW_SEC then return nil end
+	return c
+end
+
+-- Telemetry: while on, one row per gameplay frame into a ring of TELEM_CAP rows (125 s at the
+-- engine's default 120 fps cap, freespace.cpp:370). Off by default; off costs one function call
+-- and one table read per frame.
+H.TELEM_CAP = 15000
+H.TELEM_COLUMNS = { "t", "fwd_x", "fwd_y", "fwd_z", "rate_pitch", "rate_heading", "rate_bank",
+                    "speed", "aim_err_deg", "target_dist", "hull_pct" }
+H.telem = { on = false, buf = {}, head = 0, n = 0, epoch = 0, cleared = 0, error = nil }
+
+-- Empty the ring and tie it to the current run.
+local function telem_clear()
+	local T = H.telem
+	T.buf, T.head, T.n, T.epoch = {}, 0, 0, H.run_epoch
+end
+
+-- The i-th oldest row (1-based) of the ring.
+local function telem_row(i)
+	local T = H.telem
+	return T.buf[((T.head - T.n + i - 1) % H.TELEM_CAP) + 1]
+end
+
+-- Aim error (degrees between the nose `f` and the target's centre) and target distance, or
+-- -1, -1 without a target; 0, 0 if the target sits exactly at our position.
+local function aim_of(me, f)
+	local t = me.Target
+	if not (t and t:isValid()) then return -1, -1 end
+	local off = sub3(t.Position, me.Position)
+	local d = len3(off)
+	if d <= 0 then return 0, 0 end
+	return math.deg(math.acos(math.max(-1, math.min(1, dot3(f, off) / d)))), d
+end
+
+-- Turn rate v as a share of its maximum m (0 when the ship cannot turn on that axis).
+local function rate(v, m) return m > 0 and v / m or 0 end
+
+-- Rows belong to one mission run: when a new run has started, empty the ring and say so in the
+-- event log (QA SLA-4). Called before recording AND before every telemetry reply, so rows from an
+-- earlier run are never returned beside the new run's clock, even while recording is off
+-- (cross-family XFA-5).
+local function telem_sync()
+	local T = H.telem
+	if T.epoch ~= H.run_epoch then
+		if T.n > 0 then
+			T.cleared = T.cleared + 1
+			H.event("telemetry cleared: a new mission run started")
+		end
+		telem_clear()
+	end
+end
+
+-- Append one row for the player ship (nothing while there is no player).
+local function telem_record()
+	local me = hv.Player
+	if not (me and me:isValid()) then return end
+	telem_sync()
+	local T, t = H.telem, mn.getMissionTime()
+	local f = me.Orientation:getFvec()
+	local rv, mx = me.Physics.RotationalVelocity, me.Physics.RotationalVelocityMax
+	local aim, dist = aim_of(me, f)
+	-- The whole row first, then cursor and count together: an error building it must leave the
+	-- ring as it was (cross-family XFA-3).
+	local row = { t, f.x, f.y, f.z, rate(rv.x, mx.x), rate(rv.y, mx.y), rate(rv.z, mx.z),
+	              len3(me.Physics.Velocity), aim, dist, me.HitpointsLeft * 100 / me.HitpointsMax,
+	              H.collisions_total }
+	T.head = T.head % H.TELEM_CAP + 1
+	T.buf[T.head] = row
+	if T.n < H.TELEM_CAP then T.n = T.n + 1 end
+end
+
+-- Called from the frame body on normal gameplay frames. Its own pcall: an error here must not
+-- stop the commands and timers that run after it in the frame, among them the `telemetry off`
+-- that would end it (QA SF-2 / TA-5 / SLA-2). On an error telemetry switches itself off and
+-- keeps the message for `telemetry read` / `off`.
+function H.telemetry_frame()
+	if not H.telem.on then return end
+	local ok, err = pcall(telem_record)
+	if not ok then
+		H.telem.on = false
+		H.telem.error = tostring(err)
+		H.note_error(err)
+		H.event("telemetry switched off by an error: " .. H.telem.error)
+	end
+end
+
+-- Summary of rows[a..b]: aim error, share of frames within 3 degrees, wiggle (sign flips of a
+-- turn rate above 5% of max, per second), peak turn rate, mean speed, contacts started in the
+-- window. fps and wiggle need two rows spanning time; otherwise they are null (QA CR-3). Every
+-- "per second" here is per MISSION second: under time compression the renderer's real frame
+-- rate is fps x compression / 100 (cross-family XFA-7; frame_stats measures real frame times).
+local function telem_summary(a, b)
+	local first, last = telem_row(a), telem_row(b)
+	local secs = last[1] - first[1]
+	local aim_n, aim_sum, aim_min, aim_max, on3 = 0, 0, math.huge, -1, 0
+	local flips, prev, peak, speed = { 0, 0, 0 }, { 0, 0, 0 }, 0, 0
+	for i = a, b do
+		local r = telem_row(i)
+		if r[9] >= 0 then
+			aim_n, aim_sum = aim_n + 1, aim_sum + r[9]
+			aim_min, aim_max = math.min(aim_min, r[9]), math.max(aim_max, r[9])
+			if r[9] <= 3 then on3 = on3 + 1 end
+		end
+		for k = 1, 3 do
+			local w = r[4 + k]
+			peak = math.max(peak, math.abs(w))
+			if math.abs(w) > 0.05 then
+				if prev[k] ~= 0 and (w > 0) ~= (prev[k] > 0) then flips[k] = flips[k] + 1 end
+				prev[k] = w
+			end
+		end
+		speed = speed + r[8]
+	end
+	local frames = b - a + 1
+	local timed = frames >= 2 and secs >= 0.001
+	return {
+		frames = frames, seconds = r2(secs),
+		fps = timed and r2((frames - 1) / secs) or json.null,
+		aim_err_deg = aim_n > 0 and { mean = r2(aim_sum / aim_n), min = r2(aim_min),
+		                              max = r2(aim_max), within_3deg_pct = r2(100 * on3 / aim_n) }
+		              or json.null,
+		wiggle_per_sec = timed and { pitch = r2(flips[1] / secs), heading = r2(flips[2] / secs),
+		                             bank = r2(flips[3] / secs) } or json.null,
+		peak_rate = r2(peak), mean_speed = r2(speed / frames),
+		collisions = last[12] - first[12],
+	}
+end
+
+-- State fields every telemetry reply carries: whether it is on, rows held, the mission clock
+-- now and at the newest row (a gap means recording stopped, e.g. no player ship), how many
+-- times a new run emptied it, and the error that switched it off (QA SF-4, SLA-4).
+local function telem_status()
+	local T = H.telem
+	return { on = T.on, rows = T.n, now = r2(mn.getMissionTime()),
+	         last_row_t = T.n > 0 and r2(telem_row(T.n)[1]) or json.null,
+	         cleared = T.cleared, error = T.error or json.null }
+end
+
+-- Status plus rows of the last `seconds`, one per 1/hz seconds, as compact arrays under one
+-- column list (aim and distance read -1 without a target).
+local function telem_read(seconds, hz)
+	local T, out = H.telem, telem_status()
+	if T.n == 0 then return out end
+	local from = telem_row(T.n)[1] - seconds
+	local a = T.n
+	while a > 1 and telem_row(a - 1)[1] >= from do a = a - 1 end
+	local samples, next_t = {}, -math.huge
+	for i = a, T.n do
+		local r = telem_row(i)
+		if r[1] >= next_t then
+			local s = {}
+			for k = 1, #H.TELEM_COLUMNS do s[k] = r2(r[k]) end
+			samples[#samples + 1] = s
+			next_t = r[1] + 1 / hz
+		end
+	end
+	out.summary, out.columns, out.samples = telem_summary(a, T.n), H.TELEM_COLUMNS, samples
+	return out
+end
+
+-- `telemetry` command: on (empties the ring, clears an old error), off, clear, read.
+H.handlers.telemetry = function(args)
+	if mn.isInMission() then H.track_run() end   -- notice a restart even with recording off
+	telem_sync()
+	local action = args.action
+	if action == "on" then
+		telem_clear()
+		H.telem.on, H.telem.error = true, nil
+		return telem_status()
+	elseif action == "off" then
+		H.telem.on = false
+		return telem_status()
+	elseif action == "clear" then
+		telem_clear()
+		return telem_status()
+	elseif action == "read" then
+		return telem_read(clamp(args.seconds or 10, 0.1, 120), clamp(args.hz or 2, 0.1, 10))
+	end
+	H.raise("unknown telemetry action " .. tostring(action), "on, off, read or clear")
 end
 
 -- ---- startup stage switches (spec section 5); each one is off unless the harness set it -------

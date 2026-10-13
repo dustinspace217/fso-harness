@@ -205,7 +205,7 @@ function M.install()
 	mn = {
 		isInMission = function() return W.in_mission end,
 		getMissionTime = function() return W.mission_time end,
-		getMissionFilename = function() return "sm1-01" end,
+		getMissionFilename = function() return W.mission_file or "sm1-01" end,
 		evaluateSEXP = function(t) return sexp_result(t, false) end,
 		evaluateNumericSEXP = function(t) return sexp_result(t, 0) end,
 		runSEXP = function(t) W.runs[#W.runs + 1] = t return sexp_result(t, true) end,
@@ -224,6 +224,9 @@ function M.install()
 		__index = function(_, k)
 			if k == "Player" then return W.player end
 			if k == "Text" then return W.popup_text end
+			-- Collision hook variables a test sets (W.hv); anything unset reads nil, as the
+			-- engine's hv indexer returns nil for a variable this hook did not define.
+			if W.hv then return W.hv[k] end
 		end })
 
 	W.created, W.selected = {}, {}

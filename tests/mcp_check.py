@@ -83,7 +83,8 @@ CASES = {
     "crash_report": dict(id=S),
     "sexp": dict(id=S, expr="-( true )", mode="eval"), "lua": dict(id=S, code="--[[x]] return 1"),
     "post_event": dict(id=S, name="GS_EVENT_QUIT_GAME"), "answer_popup": dict(id=S, choice=1),
-    "pilot": dict(id=S, pitch=-0.5, primary=True, seconds=2),
+    "pilot": dict(id=S, pitch=-0.5, primary=True, seconds=2, stop_on_collision=False),
+    "telemetry": dict(id=S, action="read", seconds=30, hz=4),
     "autopilot": dict(id=S, on=True), "time": dict(id=S, compression=400),
     "keys": dict(id=S, keys=["-", "minus"], hold_ms=0),
     "click": dict(id=S, x=-1, y=5, double=True), "drag": dict(id=S, x1=1, y1=2, x2=-3, y2=4),
@@ -124,6 +125,14 @@ for fn_name, kwargs in CASES.items():
             assert same, f"{fn_name}: {name}={value!r} landed as {got!r} ({argv})"
         elif name in ns and isinstance(value, bool):   # a flag the tool dropped (QA TA-8)
             assert ns[name] is value, f"{fn_name}: {name}={value!r} landed as {ns[name]!r}"
+
+# pilot with stop_on_collision left at its default must keep the stop on (QA TA-10): the loop
+# above only sees the False case, so a tool that always sent --no-stop-on-collision would pass.
+calls.clear()
+server.pilot(id=S, seconds=1)
+argv = calls[-1][0][calls[-1][0].index("--json"):]
+assert "--no-stop-on-collision" not in argv, argv
+assert vars(parser.parse_args(argv))["stop_on_collision"] is True, argv
 
 # ---- timeout path: SIGTERM first, so fsoctl's cleanup can run -------------------------------
 with tempfile.TemporaryDirectory() as d:

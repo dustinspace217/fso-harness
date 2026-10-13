@@ -630,6 +630,488 @@ test("every_bridge_function_the_table_calls_exists", function(W)
 	truthy(n >= 3, "references found (" .. n .. ")")
 end)
 
+-- ---- collision alerts and telemetry ---------------------------------------------------------
+
+-- A strict {x, y, z} vector: reading any other field is fatal, as on an engine vector (QA CR-6).
+local function vec(x, y, z) return stubs.handle({ x = x, y = y, z = z }) end
+
+-- A ship that can fly and be hit: signature, axes, physics and a target, as the new code reads.
+-- Orientation and Physics are strict handles, so a misspelled field fails the test (QA CR-6).
+-- Default axes are the world axes; `axes` = {r, u, f} vectors overrides them.
+local function flyer(name, sig, extra, axes)
+	axes = axes or { vec(1, 0, 0), vec(0, 1, 0), vec(0, 0, 1) }
+	local e = {
+		getSignature = function() return sig end,
+		Orientation = stubs.handle({ getRvec = function() return axes[1] end,
+		                             getUvec = function() return axes[2] end,
+		                             getFvec = function() return axes[3] end }),
+		Physics = stubs.handle({ Velocity = vec(0, 0, 50),
+		                         RotationalVelocity = vec(0, 0, 0),
+		                         RotationalVelocityMax = vec(2, 2, 2) }),
+		Position = vec(0, 0, 0), HitpointsLeft = 75, HitpointsMax = 100,
+	}
+	for k, v in pairs(extra or {}) do e[k] = v end
+	return stubs.ship(name, e)
+end
+
+-- Run the collision hook once with hook variables `hv` (the engine sets them per call).
+local function collide(H, hv)
+	stubs.world.hv = hv
+	H.ship_collision()
+	stubs.world.hv = nil
+end
+
+-- One player-vs-`other` contact in the current simulation frame, as the engine reports it: twice,
+-- with Ship and ShipB swapped.
+local function contact(H, W, other, hitpos)
+	local p = hitpos or vec(0, 0, 5)
+	collide(H, { Ship = W.player, ShipB = other, Hitpos = p })
+	collide(H, { Ship = other, ShipB = W.player, Hitpos = p })
+end
+
+test("collision_ignores_weapons_beams_and_other_ships", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local iota, leo = flyer("Iota", 2), flyer("Leo", 3)
+	collide(H, { Ship = W.player, ShipB = iota, Weapon = iota })
+	collide(H, { Ship = W.player, ShipB = iota, Beam = iota })
+	collide(H, { Ship = leo, ShipB = iota })
+	eq(H.collisions_total, 0, "ignored contacts")
+	eq(H.last_collision, nil, "no record")
+end)
+
+test("collision_counts_contact_starts_not_contact_frames", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local iota, leo = flyer("Iota", 2), flyer("Leo", 3)
+	contact(H, W, iota)
+	eq(H.collisions_total, 1, "first contact, reported twice")
+	eq(H.last_collision.new, true, "new")
+	for _ = 1, 5 do frames(H, 1); contact(H, W, iota) end   -- grinding along the hull
+	eq(H.collisions_total, 1, "continuing contact is one contact")
+	eq(H.last_collision.new, false, "ongoing")
+	contact(H, W, leo)                                       -- a second ship, same frame
+	eq(H.collisions_total, 2, "a different object counts")
+	frames(H, 2)                                             -- a contact-free frame
+	contact(H, W, iota)
+	eq(H.collisions_total, 3, "touching again after a gap counts")
+end)
+
+test("collision_direction_is_in_the_ships_own_axes", function(W)
+	local H = boot(W)
+	-- Nose along world +x, right along world -z, up along world +y (QA TA-1).
+	W.player = flyer("Alpha 1", 1, nil, { vec(0, 0, -1), vec(0, 1, 0), vec(1, 0, 0) })
+	contact(H, W, flyer("Iota", 2), vec(5, 0, 0))
+	local d = H.last_collision.direction
+	eq(d.forward, 1, "ahead"); eq(d.right, 0, "right"); eq(d.up, 0, "up")
+	frames(H, 2)
+	contact(H, W, flyer("Leo", 3), vec(0, -6, 1))
+	d = H.last_collision.direction
+	eq(d.up, -0.99, "below"); eq(d.forward, 0, "forward"); eq(d.right, -0.16, "left")
+end)
+
+test("collision_record_fields", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1, { HitpointsMax = 200, HitpointsLeft = 75 })
+	rawset(W.player.Physics, "Velocity", vec(1, 1, 1))
+	W.mission_time = 12.345
+	contact(H, W, flyer("Iota", 2))
+	local c = H.last_collision
+	eq(c.hull_pct, 37.5, "hull %"); eq(c.speed, 1.73, "speed"); eq(c.other, "Iota", "other")
+	eq(c.other_kind, "ship", "kind"); eq(c.mission, "sm1-01", "mission")
+	eq(c.mission_time, 12.35, "time"); eq(c.count, 1, "count")
+end)
+
+test("collision_kinds_without_a_ship", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local cases = { { "Debris", "debris" }, { "Asteroid", "asteroid" } }
+	for i, case in ipairs(cases) do
+		frames(H, 2)
+		local obj = stubs.handle({ Name = "x", getSignature = function() return 100 + i end })
+		collide(H, { Ship = W.player, [case[1]] = obj, Hitpos = vec(1, 0, 0) })
+		eq(H.last_collision.other_kind, case[2], case[1])
+		eq(H.last_collision.other, json.null, case[1] .. " has no ship name")
+		eq(H.collisions_total, i, case[1] .. " counted")
+	end
+	-- Two asteroids, one after the other with no gap: two contacts (cross-family XFA-1).
+	frames(H, 2)
+	local rock = function(sig) return stubs.handle({ Name = "r", getSignature = function() return sig end }) end
+	collide(H, { Ship = W.player, Asteroid = rock(7), Hitpos = vec(1, 0, 0) })
+	frames(H, 1)
+	collide(H, { Ship = W.player, Asteroid = rock(8), Hitpos = vec(1, 0, 0) })
+	eq(H.collisions_total, 4, "a second asteroid is a new contact")
+	frames(H, 1)
+	collide(H, { Ship = W.player, Asteroid = rock(8), Hitpos = vec(1, 0, 0) })
+	eq(H.collisions_total, 4, "the same asteroid next frame is the same contact")
+	-- The rammed ship destroyed in this frame: an invalid handle, no other variable set.
+	frames(H, 2)
+	local dead = flyer("Gone", 9)
+	dead.isValid = function() return false end
+	collide(H, { Ship = W.player, ShipB = dead, Hitpos = vec(1, 0, 0) })
+	eq(H.last_collision.other_kind, "unknown", "invalid ship")
+	-- No hit position (no engine call site does this): null direction, never an invented one.
+	frames(H, 2)
+	collide(H, { Ship = W.player, ShipB = flyer("Iota", 2) })
+	eq(H.last_collision.direction, json.null, "no direction")
+	frames(H, 2)
+	collide(H, { Ship = W.player, ShipB = flyer("Leo", 3), Hitpos = vec(0, 0, 0) })
+	eq(H.last_collision.direction, json.null, "contact at our own position has no direction")
+end)
+
+test("a_pause_or_dialog_does_not_turn_one_contact_into_two", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local iota = flyer("Iota", 2)
+	contact(H, W, iota)
+	frames(H, 3, true)                                       -- dialog frames: no simulation
+	W.state = "GS_STATE_GAME_PAUSED"; frames(H, 3); W.state = "GS_STATE_GAME_PLAY"
+	eq(H.touching(), true, "still touching across the pause (cross-family XFA-4)")
+	frames(H, 1)
+	contact(H, W, iota)                                      -- the same contact, resumed
+	eq(H.collisions_total, 1, "no new contact after the pause")
+end)
+
+test("state_shows_a_contact_from_this_very_frame_at_a_fractional_time", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	W.mission_time = 12.345                                  -- stored rounded up to 12.35
+	frames(H, 1)
+	contact(H, W, flyer("Iota", 2))
+	local p = call(W, H, 1, "state", { ships = false, goals = false, events = false }).result.player
+	eq(p.collision.other, "Iota", "shown (cross-family XFA-6)")
+end)
+
+test("a_failed_collision_record_changes_nothing", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local iota = flyer("Iota", 2)
+	rawset(W.player.Physics, "Velocity", "not a vector")   -- a plain Lua error, not a field read
+	collide(H, { Ship = W.player, ShipB = iota, Hitpos = vec(0, 0, 5) })
+	eq(H.collisions_total, 0, "count unchanged (QA SF-1)")
+	eq(H.last_collision, nil, "no record")
+	eq(H.collision_errors, 1, "error counted (QA SF-3)")
+	truthy(H.collision_last_error, "error kept")
+	rawset(W.player.Physics, "Velocity", vec(0, 0, 50))
+	collide(H, { Ship = iota, ShipB = W.player, Hitpos = vec(0, 0, 5) })   -- the swapped call
+	eq(H.collisions_total, 1, "the swapped call counts it once")
+	local p = call(W, H, 1, "state", { ships = false, goals = false, events = false }).result.player
+	eq(p.collision_errors, 1, "state shows the error count")
+	local d = call(W, H, 2, "check", { kind = "collision", value = -1 }).result.detail
+	eq(d.errors, 1, "check shows it"); truthy(d.last_error, "check shows the message")
+end)
+
+test("pilot_stops_on_a_new_contact_with_its_direction", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	send(W, 1, "pilot", { seconds = 30, forward = 1 })
+	frames(H, 2)
+	contact(H, W, flyer("Iota", 2), vec(0, 0, 5))
+	frames(H, 1)
+	local r = reply(W, 1).result
+	eq(r.stopped_because, "collision", "stopped_because")
+	eq(r.collision.direction.forward, 1, "direction")
+	eq(r.collisions, 1, "contacts during the flight"); eq(r.touching, true, "still touching")
+	eq(H.piloting, false, "latch released"); eq(W.control_mode, "NORMAL", "control handed back")
+end)
+
+test("pilot_reports_the_new_contact_not_one_still_grinding", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local iota, leo = flyer("Iota", 2), flyer("Leo", 3)
+	contact(H, W, iota); frames(H, 1); contact(H, W, iota)   -- grinding Iota
+	send(W, 1, "pilot", { seconds = 30 })
+	frames(H, 1)
+	contact(H, W, leo, vec(-5, 0, 0))                        -- Leo hits, from the left
+	contact(H, W, iota)                                      -- Iota still grinding, recorded last
+	eq(H.last_collision.other, "Iota", "the latest record is the ongoing grind")
+	frames(H, 1)
+	local r = reply(W, 1).result
+	eq(r.collision.other, "Leo", "the new contact (cross-family XFK-3)")
+	eq(r.collision.direction.right, -1, "its direction")
+	eq(call(W, H, 2, "check", { kind = "collision", value = -1 }).result.detail.last.other, "Leo",
+	   "check reports it too")
+end)
+
+test("an_escape_flight_flies_through_continuing_contact", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local iota = flyer("Iota", 2)
+	contact(H, W, iota); frames(H, 1); contact(H, W, iota)   -- grinding before the flight
+	send(W, 1, "pilot", { seconds = 30, forward = -1 })
+	frames(H, 1)                                             -- the flight starts mid-contact
+	for _ = 1, 4 do contact(H, W, iota); frames(H, 1) end    -- still grinding (QA SLA-1 / CR-1)
+	eq(reply(W, 1), nil, "kept flying through the old contact")
+	frames(H, 1)                                             -- broke free for a frame
+	contact(H, W, iota)                                      -- then touched again: new
+	frames(H, 1)
+	eq(reply(W, 1).result.stopped_because, "collision", "a new contact stops it")
+end)
+
+test("a_flight_after_an_earlier_contact_is_not_stopped_by_it", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	contact(H, W, flyer("Iota", 2))
+	frames(H, 3)                                             -- contact over (QA TA-2)
+	send(W, 1, "pilot", { seconds = 0.1 })
+	frames(H, 1)
+	W.mission_time = W.mission_time + 1
+	frames(H, 1)
+	local r = reply(W, 1).result
+	eq(r.stopped_because, "time", "stopped by time"); eq(r.collisions, 0, "no new contacts")
+	eq(r.collision, nil, "no contact reported (null)"); eq(r.touching, false, "not touching")
+end)
+
+test("pilot_can_keep_flying_through_contacts_and_still_report_them", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	send(W, 1, "pilot", { seconds = 1, stop_on_collision = false })
+	frames(H, 2)
+	contact(H, W, flyer("Iota", 2))
+	frames(H, 2)
+	eq(reply(W, 1), nil, "still flying")
+	W.mission_time = W.mission_time + 2
+	frames(H, 1)
+	local r = reply(W, 1).result
+	eq(r.stopped_because, "time", "ended by time")
+	eq(r.collisions, 1, "the contact is reported (QA CR-5)"); eq(r.collision.other, "Iota", "which")
+end)
+
+test("a_contact_that_kills_the_player_reports_player_dead", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	send(W, 1, "pilot", { seconds = 30 })
+	frames(H, 1)
+	contact(H, W, flyer("Iota", 2))
+	W.player.isValid = function() return false end
+	frames(H, 1)
+	eq(reply(W, 1).result.stopped_because, "player_dead", "death before contact (QA CR-11)")
+end)
+
+test("a_contact_on_the_last_tick_is_reported_as_collision", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	send(W, 1, "pilot", { seconds = 0.1 })
+	frames(H, 1)
+	contact(H, W, flyer("Iota", 2))
+	W.mission_time = W.mission_time + 1
+	frames(H, 1)
+	eq(reply(W, 1).result.stopped_because, "collision", "collision wins the tie")
+end)
+
+test("state_shows_contact_and_touching_for_this_run_only", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local args = { ships = false, goals = false, events = false }
+	frames(H, 1)
+	contact(H, W, flyer("Iota", 2), vec(1, 0, 0))
+	local p = call(W, H, 1, "state", args).result.player
+	eq(p.collision.other, "Iota", "shown"); eq(p.collisions_total, 1, "total")
+	eq(p.touching, true, "touching")
+	p = call(W, H, 2, "state", args).result.player
+	eq(p.touching, false, "a contact-free frame")
+	W.mission_time = 10 + H.COLLISION_SHOW_SEC               -- the contact was at t = 10
+	eq(call(W, H, 3, "state", args).result.player.collision.other, "Iota", "shown at the limit")
+	W.mission_time = 10 + H.COLLISION_SHOW_SEC + 0.5
+	eq(call(W, H, 4, "state", args).result.player.collision, nil, "expired (null)")
+	W.mission_time = 1                                       -- the same mission restarted
+	frames(H, 1)
+	W.mission_time = 11
+	eq(call(W, H, 5, "state", args).result.player.collision, nil, "previous run hidden (QA SLA-3)")
+end)
+
+test("check_collision_is_met_past_the_callers_baseline", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	local r = call(W, H, 1, "check", { kind = "collision", value = -1 }).result
+	eq(r.met, true, "baseline query"); eq(r.detail.total, 0, "total"); eq(r.detail.errors, 0, "errors")
+	eq(call(W, H, 2, "check", { kind = "collision", value = 0 }).result.met, false, "not yet")
+	contact(H, W, flyer("Iota", 2))
+	r = call(W, H, 3, "check", { kind = "collision", value = 0 }).result
+	eq(r.met, true, "met"); eq(r.detail.last.other, "Iota", "detail")
+end)
+
+-- Run `n` gameplay frames, each at mission time t0 + i*dt, calling `each(i)` before each one.
+local function timed_frames(H, W, n, t0, dt, each)
+	for i = 0, n - 1 do
+		W.mission_time = t0 + i * dt
+		if each then each(i) end
+		frames(H, 1)
+	end
+end
+
+test("telemetry_records_nothing_while_off", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	frames(H, 5)
+	eq(H.telem.n, 0, "rows while off")
+	local r = call(W, H, 1, "telemetry", { action = "read" }).result
+	eq(r.rows, 0, "read while off"); eq(r.on, false, "off"); eq(r.summary, nil, "no summary")
+	eq(heartbeat(W).telemetry_on, false, "heartbeat says off")
+end)
+
+test("telemetry_read_window_and_downsampling", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	call(W, H, 1, "telemetry", { action = "on" })
+	timed_frames(H, W, 20, 21, 1)                            -- rows at t = 21 .. 40
+	H.telem.on = false               -- freeze: a read frame would add a row at an unchanged time
+	local r = call(W, H, 2, "telemetry", { action = "read", seconds = 5, hz = 10 }).result
+	eq(r.summary.frames, 6, "rows from t=35 to 40 (QA TA-4)")
+	eq(r.samples[1][1], 35, "oldest row in the window"); eq(#r.samples, 6, "every row at 10 Hz")
+	call(W, H, 3, "telemetry", { action = "on" })
+	timed_frames(H, W, 17, 50, 0.125)                        -- t = 50 .. 52, exact in binary
+	H.telem.on = false
+	r = call(W, H, 4, "telemetry", { action = "read", seconds = 120, hz = 2 }).result
+	eq(#r.samples, 5, "2 Hz over 2 s: 50, 50.5, 51, 51.5, 52")
+	eq(r.samples[2][1], 50.5, "second sample")
+	eq(r.summary.fps, 8, "16 intervals over 2 s (QA CR-3)")
+end)
+
+test("telemetry_summary_values", function(W)
+	local H = boot(W)
+	local tgt = stubs.handle({ Position = vec(0, 0, 100) })
+	W.player = flyer("Alpha 1", 1, { Target = tgt })
+	H.telem.on = true
+	local aims = { 2, 4, 2, 4 }
+	local iota = flyer("Iota", 2)
+	for i = 0, 3 do
+		W.mission_time = 30 + i * 0.1
+		local a = math.rad(aims[i + 1])
+		rawset(tgt, "Position", vec(100 * math.sin(a), 0, 100 * math.cos(a)))
+		rawset(W.player.Physics, "RotationalVelocity",
+		       vec((i % 2 == 0) and 0.08 or -0.08, (i % 2 == 0) and 0.6 or -0.6, 1.6))
+		rawset(W.player.Physics, "Velocity", vec(0, 0, 10 * (i + 1)))
+		if i == 2 then contact(H, W, iota) end
+		frames(H, 1)
+	end
+	H.telem.on = false                                       -- freeze the rows before reading
+	local s = call(W, H, 1, "telemetry", { action = "read", seconds = 120, hz = 10 }).result.summary
+	eq(s.frames, 4, "frames"); eq(s.seconds, 0.3, "seconds"); eq(s.fps, 10, "fps (N-1)/secs")
+	eq(s.aim_err_deg.mean, 3, "aim mean"); eq(s.aim_err_deg.min, 2, "aim min")
+	eq(s.aim_err_deg.max, 4, "aim max"); eq(s.aim_err_deg.within_3deg_pct, 50, "within 3 deg")
+	eq(s.wiggle_per_sec.heading, 10, "3 heading flips at 0.3 of max over 0.3 s")
+	eq(s.wiggle_per_sec.pitch, 0, "pitch below the 5% threshold")
+	eq(s.wiggle_per_sec.bank, 0, "steady bank")
+	eq(s.peak_rate, 0.8, "peak = bank at 0.8 of max"); eq(s.mean_speed, 25, "mean speed")
+	eq(s.collisions, 1, "one contact in the window")
+end)
+
+test("telemetry_one_row_has_no_rate_figures", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	H.telem.on = true
+	frames(H, 1)
+	H.telem.on = false
+	local r = call(W, H, 1, "telemetry", { action = "read" }).result
+	eq(r.summary.frames, 1, "one row")
+	eq(r.summary.fps, nil, "fps null (QA CR-3)"); eq(r.summary.wiggle_per_sec, nil, "wiggle null")
+	eq(r.samples[1][9], -1, "aim column is -1 without a target")
+	eq(r.summary.aim_err_deg, nil, "no aim summary without a target")
+end)
+
+test("telemetry_ring_cap_and_new_runs", function(W)
+	local H = boot(W)
+	H.TELEM_CAP = 5
+	W.player = flyer("Alpha 1", 1)
+	call(W, H, 1, "telemetry", { action = "on" })
+	timed_frames(H, W, 12, 21, 1)                            -- t = 21 .. 32
+	eq(H.telem.n, 5, "capped")
+	H.telem.on = false
+	local r = call(W, H, 2, "telemetry", { action = "read", seconds = 120, hz = 10 }).result
+	eq(r.samples[1][1], 28, "oldest kept row after wrap"); eq(r.samples[5][1], 32, "newest")
+	eq(r.last_row_t, 32, "last row time"); eq(r.cleared, 0, "never cleared")
+	H.telem.on = true
+	W.mission_time = 1                                       -- the same mission restarted
+	frames(H, 1)
+	eq(H.telem.n, 1, "a new run empties it")
+	eq(H.telem.cleared, 1, "and counts it")
+	has(H.events[#H.events], "telemetry cleared", "event logged (QA SLA-4)")
+	W.mission_file = "sm1-02"; W.mission_time = 5            -- another mission, later clock
+	frames(H, 1)
+	eq(H.telem.n, 1, "another mission empties it too (QA SF-4)"); eq(H.telem.cleared, 2, "count")
+	r = call(W, H, 3, "telemetry", { action = "clear" }).result
+	eq(r.rows, 0, "clear")
+end)
+
+test("a_telemetry_error_switches_it_off_without_blocking_commands", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	send(W, 1, "pilot", { seconds = 1 })
+	call(W, H, 2, "telemetry", { action = "on" })
+	rawset(W.player.Physics, "RotationalVelocity", "broken")   -- a plain Lua error each frame
+	frames(H, 1)
+	eq(H.telem.on, false, "switched itself off")
+	local r = call(W, H, 3, "telemetry", { action = "off" }).result
+	truthy(r.error ~= nil, "off reports the error")
+	r = call(W, H, 4, "telemetry", { action = "read" }).result
+	truthy(r.error ~= nil, "read reports the error")
+	has(H.events[#H.events], "telemetry switched off", "event logged")
+	W.mission_time = W.mission_time + 2
+	frames(H, 1)
+	eq(reply(W, 1).result.stopped_because, "time", "the flight kept ticking (QA SF-2)")
+	rawset(W.player.Physics, "RotationalVelocity", vec(0, 0, 0))
+	r = call(W, H, 5, "telemetry", { action = "on" }).result
+	eq(r.on, true, "on again"); eq(r.error, nil, "error cleared (null)")
+	local info = call(W, H, 6, "bridge_info", {}).result
+	eq(info.telemetry_on, true, "bridge_info says on")
+end)
+
+test("telemetry_guards_neutral_values_and_skipped_frames", function(W)
+	local H = boot(W)
+	-- Target at our own position, and a ship that cannot turn on any axis (QA TA-9).
+	W.player = flyer("Alpha 1", 1, { Target = stubs.handle({ Position = vec(0, 0, 0) }) })
+	rawset(W.player.Physics, "RotationalVelocityMax", vec(0, 0, 0))
+	rawset(W.player.Physics, "RotationalVelocity", vec(1, 1, 1))
+	H.telem.on = true
+	W.mission_time = 40; frames(H, 1)
+	eq(H.telem.n, 1, "a row")
+	local row = H.telem.buf[H.telem.head]
+	eq(row[9], 0, "aim 0 at our own position"); eq(row[10], 0, "distance 0")
+	eq(row[5], 0, "turn rate 0 when max is 0"); eq(row[7], 0, "bank rate 0")
+	W.mission_time = 41; frames(H, 1, true)                   -- a dialog frame
+	eq(H.telem.n, 1, "no row on dialog frames")
+	W.player.isValid = function() return false end
+	W.mission_time = 42; frames(H, 1)
+	eq(H.telem.n, 1, "no row without a player ship")
+	local r = call(W, H, 1, "telemetry", { action = "read" }).result
+	eq(r.now, 42, "now"); eq(r.last_row_t, 40, "last row: the gap shows rows stopped")
+	eq(call(W, H, 2, "telemetry", { action = "on" }).result.rows, 0, "on empties the ring")
+end)
+
+test("a_telemetry_error_after_rows_leaves_the_ring_intact", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	call(W, H, 1, "telemetry", { action = "on" })
+	timed_frames(H, W, 3, 60, 1)                             -- rows at 60, 61, 62
+	local n = H.telem.n
+	rawset(W.player, "HitpointsMax", "broken")               -- the row fails late, while built
+	W.mission_time = 63; frames(H, 1)
+	eq(H.telem.on, false, "switched off"); eq(H.telem.n, n, "row count unchanged")
+	local r = call(W, H, 2, "telemetry", { action = "read", seconds = 120, hz = 10 }).result
+	eq(r.last_row_t, 62, "newest row is the last good one (cross-family XFA-3)")
+	eq(#r.samples, n, "every good row readable"); truthy(r.error ~= nil, "error reported")
+	truthy(call(W, H, 3, "telemetry", { action = "off" }).result, "off answers")
+end)
+
+test("telemetry_off_rows_are_dropped_when_a_new_run_starts", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	call(W, H, 1, "telemetry", { action = "on" })
+	timed_frames(H, W, 3, 70, 1)
+	call(W, H, 2, "telemetry", { action = "off" })
+	W.mission_time = 2; frames(H, 1)                         -- restart while recording is off
+	local r = call(W, H, 3, "telemetry", { action = "read" }).result
+	eq(r.rows, 0, "old run's rows not returned (cross-family XFA-5)"); eq(r.cleared, 1, "counted")
+end)
+
+test("telemetry_refuses_an_unknown_action", function(W)
+	local H = boot(W)
+	local r = call(W, H, 1, "telemetry", { action = "start" })
+	eq(r.ok, false, "refused")
+	has(r.error, "unknown telemetry action", "message")
+end)
+
 -- ---- runner -----------------------------------------------------------------------------------
 
 if arg[2] == "--list" then

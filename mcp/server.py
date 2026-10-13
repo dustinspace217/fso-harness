@@ -67,7 +67,16 @@ and ship names must exist and may not contain " ! ( ); sexps are capped below 80
 qtFRED only ever edits a copy of a mission; write mods into a scratch_mod, never the game folder.
 Every call returns JSON; on failure read message and hint. Exit codes: 5 timeout (the message
 says whether the command ran), 6 engine gone (crash_report), 7 refused, 8 Lua error, 9 the work
-failed. Always stop sessions you started."""
+failed. Always stop sessions you started.
+
+Lua that cannot crash the engine (a bad name or argument aborts it; pcall does NOT catch that):
+the lua tool refuses unknown library functions (ba.x, mn.x...) and colon calls on the no-self
+control_info functions (call ci.useButtonControl(-1, "X") with a dot) when api_docs is cached
+for the build; its reply's lua_check says passed or skipped. It cannot see handle types:
+compare handles with getSignature(), read ship-only fields only after getBreedName() == "Ship"
+(a Target or HomingObject can be a missile), and check handle methods in api_docs scripting.lua.
+Flying the player from Lua: docs/AGENT-GUIDE.md "Fly a mission" (steering conventions, reloadable
+hook; keep time compression at 100 while a controller flies)."""
 
 mcp = MCPServer("fso-harness", instructions=INSTRUCTIONS)
 
@@ -316,13 +325,30 @@ def answer_popup(id: str, choice: int = 0) -> str:
 @mcp.tool()
 def pilot(id: str, pitch: float = 0.0, heading: float = 0.0, bank: float = 0.0,
           forward: float = 0.0, primary: bool = False, secondary: bool = False, cm: bool = False,
-          seconds: float = 1.0) -> str:
+          seconds: float = 1.0, stop_on_collision: bool = True) -> str:
     """Fly the player ship for `seconds` of mission time (axes -1..1; fire flags fire every
     frame), then hand control back. Refused while paused. The reply says whether the flight
-    completed and why it stopped."""
+    completed and why it stopped. A NEW contact stops the flight (stopped_because "collision");
+    `collision.direction` gives where it is in the ship's axes (right/up/forward, unit length):
+    steer the other way, reversing if it is ahead, and fly off. Contact that began before the
+    flight does not stop it, so the escape flight works; `touching` says whether you are still
+    in contact. stop_on_collision=false keeps flying (`collisions` still counts contacts)."""
     return _ctl("pilot", f"--pitch={pitch}", f"--heading={heading}", f"--bank={bank}",
                 f"--forward={forward}", *_opt("primary", primary), *_opt("secondary", secondary),
-                *_opt("cm", cm), f"--seconds={seconds}", *_pos(id), timeout=seconds * 10 + 60)
+                *_opt("cm", cm), f"--seconds={seconds}",
+                *([] if stop_on_collision else ["--no-stop-on-collision"]), *_pos(id),
+                timeout=seconds * 10 + 60)
+
+
+@mcp.tool()
+def telemetry(id: str, action: str, seconds: float = 10.0, hz: float = 2.0) -> str:
+    """Per-frame flight telemetry, OFF unless switched on: action on | off | read | clear.
+    Turn it on only for runs that need flight-quality data (it costs work every frame). read
+    returns a summary (aim error, % of frames within 3 degrees of the target, wiggle = turn-rate
+    sign flips per second, collisions) plus samples at `hz` (max 10) over the last `seconds`
+    (max 120), as compact arrays under one column list (aim/distance -1 = no target). Every
+    reply has `error` (an error switches it off) and `last_row_t` vs `now` (rows stopped)."""
+    return _ctl("telemetry", f"--seconds={seconds}", f"--hz={hz}", *_pos(id, action))
 
 
 @mcp.tool()
@@ -374,8 +400,9 @@ def scroll(id: str, x: int, y: int, clicks: int) -> str:
 @mcp.tool()
 def wait_for(id: str, kind: str, value: str, timeout: float = 60.0) -> str:
     """Block until a condition holds: kind = state | mission_time | event_true | event_false |
-    goal ("Name=complete") | destroyed | departed | log (regex on new log lines). Event and ship
-    names must exist in the mission and may not contain " ! ( or )."""
+    goal ("Name=complete") | destroyed | departed | log (regex on new log lines) | collision
+    (any value; the next contact the player starts, with its direction). Event and ship names
+    must exist in the mission and may not contain " ! ( or )."""
     return _ctl("wait_for", f"--timeout={timeout}", *_pos(id, kind, value), timeout=timeout + 30)
 
 

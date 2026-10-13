@@ -242,3 +242,77 @@ Sources: the QA record (kept outside this repository).
   with RuntimeMaxSec = runtime_sec + 60 as the backstop.
 - **FSO's double click** is two presses within 250 ms as sampled per frame (ui/uimouse.cpp:68),
   stricter than Qt's 400 ms; `click double=true` uses 0.08 s holds and gap in one xdotool process.
+
+## 19. Found flying SM1-01 from a Lua controller (2026-10-12, evening demo)
+Everything here was observed in a session or read at the cited line; "observed" means it happened
+on this build (26.1.0, release, llvmpipe under Xvfb).
+- **pcall does not contain API errors.** A missing index (`ba.getControlMode`; `.Name` on a
+  `weapon` handle) or a wrong argument type throws `os::dialogs::LuaErrorException`; under
+  `-noninteractive` it reached `std::terminate` and SIGABRT, even though the call sat inside
+  `pcall` (observed 3 times: engine.log "terminate called after throwing an instance of
+  'os::dialogs::LuaErrorException'"). Only plain Lua errors are catchable.
+- **control_info functions take no self.** `useButtonControl` parses `"i|s"` (control_info.cpp:354),
+  `getButtonControlName` `"i"` (:387), `getButtonControlNumber` `"s"` (:401). The generated docs
+  present them as methods; `ci:useButtonControl(-1, "X")` passes the handle as argument 1 and aborts
+  the engine (observed); `ci.useButtonControl(-1, "X")` works (observed).
+- **Lua button presses.** Control names are `plr_commands` (control_info.cpp:9). With
+  `BUTTON_CONTROL_LUA_ADDITIVE` the Lua bits are OR'd into the frame's button bits and then the
+  merged set is copied back into the Lua buffer (io/keycontrol.cpp:1773-1777), so call
+  `clearLuaButtonInfo` every frame or a press repeats. `button_info_do` runs one-shot controls from
+  those bits (observed: SHIELD_EQUALIZE, INCREASE_WEAPON/ENGINE, END_MISSION all acted). Held
+  controls (FIRE_PRIMARY/SECONDARY, AFTERBURNER: playerman/playercontrol.cpp:796, 898, 911) go through
+  `check_control`, whose `check_control_used` reads keyboard, joystick and mouse state only
+  (controlconfig/controlsconfig.cpp), so Lua bits never reach them.
+- **Trigger under FLIGHT_CONTROL_LUA_FULL.** `copy_control_info` copies axes and throttle but not
+  `fire_primary_count`/`fire_secondary_count` (playercontrol.cpp:1035-1055); use
+  `ship:firePrimary()`, which calls `ship_fire_primary` (scripting/api/objs/ship.cpp:1655).
+- **ETS taps.** Two INCREASE_WEAPON taps from 4/4/4 gave 2/2/8 (engine/
+  shield/weapon index, observed); one INCREASE_ENGINE then gave 4/1/7.
+- **Turn dynamics.** Desired turn rate = stick x max turn rate per axis, in the ship frame
+  (physics/physics.cpp:497-498, :539); `Physics.RotationalVelocity` is that local vector
+  (physics_info.cpp:149). +bank rolls the ship's right axis toward its up axis, so the target's
+  on-screen angle phi = atan2(x, y) grows; bank = -k*phi rolls a target to "up" (derived from the
+  axis cycle, then observed: phi held at 0.2-0.25 degrees during a hard turn in the test flight).
+- **Frame rate.** The `pilot` verb applied 111 frames in 4.0 mission seconds and 229 in about 12 s
+  at 1x (about 20-28 fps, software rendering). Time compression divides a frame hook's control rate
+  per mission second by the same factor.
+- **Player missile lock.** HUD lock needs the lock point inside dot > 0.85 of the nose
+  (hud/hudlock.cpp:539) and in weapon range (:690), held for the weapon's lock time; not readable from
+  Lua. `weapon.HomingObject` read the frame after launch tells whether a missile is homing
+  (observed: Rockeyes "homing", Tempests "NOT homing").
+- **Friendly fire** (ai/aicode.cpp:16177-16280): each friendly hit counts weapon damage divided by
+  min(100, max hull / 1000) (x ship-type FF multiplier, x 1/5 if the hit ship is not your target),
+  capped per burst at MAX_BURST_DAMAGE 20 (ai.h:490). Any gap over 2 s between hits subtracts the gap
+  length in points; 60 s without a hit resets. Warnings above 50 (FRIENDLY_DAMAGE_THRESHOLD,
+  aicode.cpp:16102); above 50 x (1 + (6 - Game_skill_level)/3) (133 at Easy) it sends "All units,
+  terminate the traitor!", calls `mission_goal_fail_all()` and sets the player's team to Traitor
+  (observed at about t=700 after ~830 hits on the Psamtik from a station 500-750 m off its hull).
+- **Retail SM1-01 has duplicate event names** ("Return To Base" and "Protect Iota" twice each), so a
+  name-based `wait_for` sees whichever comes first.
+- **Hull distance.** `ship:checkRayCollision(from, to)` returns the world hit point (or nil); a
+  destroyer's `Radius` (Psamtik 1609 m) is its bounding sphere, so being "inside" it is normal.
+
+## 20. The "On Ship Collision" hook (probed 2026-10-12, session sd270dbee; live test s88406660)
+- **It fires for weapon hits too.** In a dogfight it ran 84 times in a few seconds with `Self` a
+  weapon, `Weapon` set and `Ship` the ship hit (Leo 2). A ship-ship contact fires it twice in one
+  frame, `Ship` and `ShipB` swapped (Alpha 1 / Iota 2, then Iota 2 / Alpha 1).
+- **Reading its variables is safe.** The `hv` indexer returns nil for a variable this hook did not
+  set (scripting/api/libs/hookvars.cpp, ADE_INDEXER l_HookVar). `hv` is userdata, so `rawget(hv,
+  k)` raises. `Ship`/`ShipB` are ship-typed (their `.Name` exists); `Self`/`Object` are
+  object-typed; `Hitpos` is a vector (no `isValid`).
+- **Hitpos is the world contact point.** A nose-on ram read (0, -6, 1) m in the player's own axes.
+  A 61 m/s ram cost 8 hull points; head-on contacts in the live test cost about 2%.
+- **A freighter early in SM1-01 moves at about 52 m/s**, so a straight run at its centre misses;
+  stage contacts head-on in its path.
+- **Grinding fires it every frame** (QA SLA-1/CR-1, source): an overlapping pair is re-tested each
+  frame with no cooldown (collideshipship.cpp:1525/1541 `next_check_time = timestamp(0)`), so the
+  bridge counts a contact when it STARTS (nothing of that object touched us the frame before).
+- **Not every contact reaches the hook** (source): debris and asteroid contacts with impulse below
+  0.5 return before it (collidedebrisship.cpp:110-111, :308-309); prop contacts only ask the hook
+  whether it overrides and never run it (collideshipship.cpp:1664-1690), so they never reach a
+  handler that does not override. All run sites pass Hitpos (collideshipship.cpp:1421/1433,
+  collidedebrisship.cpp:193/380).
+- Bridge (fsoharness-sct.tbm `$On Ship Collision`): player contacts without Weapon/Beam, counted on
+  contact start; `pilot` stops on a new one; `state` and `wait_for collision` report it. Engine
+  runs: the live-test record kept with the QA record outside this repo (one mission,
+  one freighter; rows say which cells ran).
