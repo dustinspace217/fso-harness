@@ -30,7 +30,10 @@ builds side by side; `renderer_compare` on OpenGL and Vulkan.
 ## Other recipes
 
 In the MCP server they are commands: `/fso-harness:test_engine_change`, `check_mod`,
-`compare_builds`, `read_crash`. The full text is `docs/AGENT-GUIDE.md` in the harness repo.
+`compare_builds`, `read_crash`, `reproduce_multiplayer_bug`. The full text is
+`docs/AGENT-GUIDE.md` in the harness repo. Multiplayer: `match_create`, then `launch` with
+`match` and `role` (`standalone`, `host`, `client`) into that private network, which nothing on
+the LAN or the internet can reach; `match_remove` ends it.
 
 ## What the tools refuse, and why
 

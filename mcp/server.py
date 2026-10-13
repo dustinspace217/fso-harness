@@ -60,11 +60,12 @@ allow_eval=true and every skip_* flag, wait_for state GS_STATE_GAME_PLAY, autopi
 compression up, then use sexp (eval to ask, run to make anything happen that a mission event
 could) and lua (the build's own API, see api_docs) while wait_for pins goals, events and ship
 deaths. Prompts: /fso-harness:playtest_mission, test_engine_change, check_mod, compare_builds,
-read_crash. Recipes in docs/AGENT-GUIDE.md.
+read_crash, reproduce_multiplayer_bug. Recipes in docs/AGENT-GUIDE.md. Multiplayer: match_create,
+then launch with match + role (standalone|host|client).
 
 Rules the tools enforce: lua, post_event and Lua-running sexps need allow_eval (audited); event
 and ship names must exist and may not contain " ! ( ); sexps are capped below 8000 bytes;
-qtFRED only ever edits a copy of a mission; write mods into a scratch_mod, never the game folder.
+qtFRED only edits a copy of a mission; write mods into a scratch_mod, never the game folder.
 Every call returns JSON; on failure read message and hint. Exit codes: 5 timeout (the message
 says whether the command ran), 6 engine gone (crash_report), 7 refused, 8 Lua error, 9 the work
 failed. Always stop sessions you started.
@@ -72,11 +73,11 @@ failed. Always stop sessions you started.
 Lua that cannot crash the engine (a bad name or argument aborts it; pcall does NOT catch that):
 the lua tool refuses unknown library functions (ba.x, mn.x...) and colon calls on the no-self
 control_info functions (call ci.useButtonControl(-1, "X") with a dot) when api_docs is cached
-for the build; its reply's lua_check says passed or skipped. It cannot see handle types:
+for the build (reply field lua_check). It cannot see handle types:
 compare handles with getSignature(), read ship-only fields only after getBreedName() == "Ship"
 (a Target or HomingObject can be a missile), and check handle methods in api_docs scripting.lua.
-Flying the player from Lua: docs/AGENT-GUIDE.md "Fly a mission" (steering conventions, reloadable
-hook; keep time compression at 100 while a controller flies)."""
+Flying the player from Lua: docs/AGENT-GUIDE.md "Fly a mission" (keep time compression at 100
+while a controller flies)."""
 
 mcp = MCPServer("fso-harness", instructions=INSTRUCTIONS)
 
@@ -145,6 +146,7 @@ PROMPTS = {
     "check_mod": "Write and check a mission or a table in a scratch mod",
     "compare_builds": "Compare a branch with master",
     "read_crash": "Read a crash",
+    "reproduce_multiplayer_bug": "Reproduce a multiplayer bug",
 }
 
 
@@ -188,8 +190,14 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
            skip_command_briefing: bool = False, skip_briefing: bool = False,
            allow_eval: bool = False, qtfred: bool = False, binary: str | None = None,
            interactive: bool = False, runtime: int = 1800, ready_timeout: float = 240.0,
-           extra_args: list[str] | None = None) -> str:
+           extra_args: list[str] | None = None, match: str | None = None,
+           role: str | None = None, port: int | None = None, connect: str | None = None,
+           game_name: str | None = None, closed: bool = False) -> str:
     """Start a game (or qtFRED) session on a private virtual display; returns its id once ready.
+
+    Multiplayer: match_create first, then launch role="standalone" | "host" | "client" with
+    match=<id>; each session gets the next free port, clients auto-join `connect` (default the
+    match's server); mission on a host/client starts that mission with no human.
 
     pilot: "chooser" | "existing:NAME" (needs pilot_source: a folder holding that pilot's files)
     | "create:NAME". mods: comma-separated mod folders. Startup stages can each be skipped:
@@ -207,7 +215,9 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
             *_opt("skip-command-briefing", skip_command_briefing),
             *_opt("skip-briefing", skip_briefing), *_opt("allow-eval", allow_eval),
             *_opt("qtfred", qtfred), *_opt("binary", binary), *_opt("interactive", interactive),
-            f"--runtime={runtime}", f"--ready-timeout={ready_timeout}"]
+            f"--runtime={runtime}", f"--ready-timeout={ready_timeout}",
+            *_opt("match", match), *_opt("role", role), *_opt("port", port),
+            *_opt("connect", connect), *_opt("game-name", game_name), *_opt("closed", closed)]
     if extra_args:
         args += ["--", *extra_args]
     return _ctl(*args, timeout=ready_timeout + LAUNCH_EXTRA_SEC)
@@ -244,6 +254,28 @@ def cleanup(older_than: float = 600) -> str:
     Sessions still starting, running or shutting down are never touched.
     """
     return _ctl("cleanup", f"--older-than={older_than}")
+
+
+@mcp.tool()
+def match_create(label: str = "") -> str:
+    """Create a private, loopback-only network for one multiplayer game; returns its id. Launch
+    the server and clients into it with launch(match=..., role=...). Nothing in it is reachable
+    from the LAN or the internet. Remove it with match_remove when done."""
+    return _ctl("match", "create", *_opt("label", label or None))
+
+
+@mcp.tool()
+def match_list() -> str:
+    """List private multiplayer networks and the sessions in each."""
+    return _ctl("match", "list")
+
+
+@mcp.tool()
+def match_remove(id: str) -> str:
+    """Stop every session in a match, then end its private network."""
+    # Up to three sessions, each stop up to TERM_GRACE_SEC, then the holder (QA XFA-3): the
+    # default budget would interrupt the removal halfway and leave members alive.
+    return _ctl("match", "remove", id, timeout=3 * TERM_GRACE_SEC + 30)
 
 
 # ---- observing -------------------------------------------------------------------------------

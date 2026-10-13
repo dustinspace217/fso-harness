@@ -1112,6 +1112,143 @@ test("telemetry_refuses_an_unknown_action", function(W)
 	has(r.error, "unknown telemetry action", "message")
 end)
 
+test("multiplayer_roles_create_a_multiplayer_pilot_and_post_the_join_events", function(W)
+	-- Plan Task 6 / probe-results 21.1-21.2: a client needs a multiplayer pilot, the join-screen
+	-- event from the main hall, and Accept on the start-game screen.
+	W.state = "GS_STATE_INITIAL_PLAYER_SELECT"
+	local H = boot(W, { pilot_mode = "create", pilot_name = "Alpha", pilot_multi = true,
+	                    multi_role = "client" })
+	frames(H, 1)
+	eq(W.created[1], "Alpha", "created")
+	eq(W.created_multi[1], true, "multi pilot")
+	eq(W.selected_multi[1], true, "multi select")
+	eq(H.switch_status.multi_join, "pending", "join pending")
+	W.state = "GS_STATE_MAIN_MENU"
+	frames(H, 1)
+	eq(W.posted[#W.posted], "GS_EVENT_MULTI_JOIN_GAME", "join event")
+	eq(H.switch_status.multi_join, "done", "join done")
+	W.state = "GS_STATE_MULTI_START_GAME"
+	frames(H, 1)
+	eq(W.posted[#W.posted], "GS_EVENT_MULTI_HOST_SETUP", "accept event")
+end)
+
+test("single_player_sessions_still_create_single_player_pilots_and_never_join", function(W)
+	W.state = "GS_STATE_INITIAL_PLAYER_SELECT"
+	local H = boot(W, { pilot_mode = "create" })
+	frames(H, 1)
+	eq(W.created_multi[1], false, "single pilot")
+	eq(H.switch_status.multi_join, nil, "no join switch")
+	W.state = "GS_STATE_MAIN_MENU"
+	local before = #W.posted
+	frames(H, 1)
+	eq(#W.posted, before, "nothing posted")
+end)
+
+test("dismiss_popups_leaves_the_joining_netgame_box_alone", function(W)
+	-- probe-results 21.1: its only button is Cancel, which abandons the join.
+	local H = boot(W, { dismiss_popups = true })
+	W.state = "GS_STATE_MULTI_JOIN_GAME"
+	W.popup_text = "Joining netgame"
+	frames(H, 3, true)
+	eq(#W.submits, 0, "the join box is not answered")
+	W.popup_text = "Some other box"
+	frames(H, 1, true)
+	eq(#W.submits, 1, "other boxes still are")
+	eq(W.submits[1], 0, "with the first button")
+end)
+
+test("the_host_launches_from_the_sync_screen_only_after_the_briefing", function(W)
+	W.state = "GS_STATE_MAIN_MENU"
+	local H = boot(W, { multi_role = "client", multi_launch = true, skip_briefing = true })
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"     -- the mission-load sync, before the briefing
+	frames(H, 1)
+	eq(W.countdowns, nil, "no launch before the briefing")
+	W.state = "GS_STATE_BRIEFING"
+	frames(H, 10)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"     -- the post-briefing sync
+	frames(H, 1)
+	eq(W.countdowns, 1, "launched once")
+	frames(H, 5)
+	eq(W.countdowns, 1, "not repeated while the state lasts")
+end)
+
+test("single_player_never_touches_the_sync_launch", function(W)
+	W.state = "GS_STATE_MAIN_MENU"
+	local H = boot(W, { skip_briefing = true })
+	W.state = "GS_STATE_BRIEFING"
+	frames(H, 10)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"
+	frames(H, 1)
+	eq(W.countdowns, nil, "no launch")
+end)
+
+test("sync_launch_fires_only_in_the_session_that_carries_the_mission", function(W)
+	-- QA SL-3 / XFA-2: a client that is not the intended host must never press Launch.
+	W.state = "GS_STATE_MAIN_MENU"
+	local H = boot(W, { multi_role = "client", skip_briefing = true })   -- no multi_launch
+	W.state = "GS_STATE_BRIEFING"
+	frames(H, 10)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"
+	frames(H, 1)
+	eq(W.countdowns, nil, "no launch without the switch")
+end)
+
+test("sync_launch_latch_resets_for_the_next_mission", function(W)
+	-- QA SL-2 / CR-4 / TA-9: the second mission's pre-briefing sync must not launch.
+	W.state = "GS_STATE_MAIN_MENU"
+	local H = boot(W, { multi_role = "client", multi_launch = true, skip_briefing = true })
+	W.state = "GS_STATE_BRIEFING"
+	frames(H, 10)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"
+	frames(H, 1)
+	eq(W.countdowns, 1, "first launch")
+	W.state = "GS_STATE_GAME_PLAY"
+	frames(H, 5)
+	W.state = "GS_STATE_DEBRIEF"
+	frames(H, 1)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"      -- mission 2, before its briefing
+	frames(H, 1)
+	eq(W.countdowns, 1, "no launch before the second briefing")
+	W.state = "GS_STATE_BRIEFING"
+	frames(H, 10)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"
+	frames(H, 1)
+	eq(W.countdowns, 2, "second launch after the second briefing")
+	-- an abandoned briefing (back to host setup) also clears it
+	W.state = "GS_STATE_BRIEFING"
+	frames(H, 10)
+	W.state = "GS_STATE_MULTI_HOST_SETUP"
+	frames(H, 1)
+	W.state = "GS_STATE_MULTI_MISSION_SYNC"
+	frames(H, 1)
+	eq(W.countdowns, 2, "no launch after an abandoned briefing")
+end)
+
+test("the_join_event_is_posted_once_so_a_cancel_is_final", function(W)
+	-- QA CR-5 / XFK-4: re-entering the main hall must not re-post the join.
+	W.state = "GS_STATE_INITIAL_PLAYER_SELECT"
+	local H = boot(W, { multi_role = "client" })
+	W.state = "GS_STATE_MAIN_MENU"
+	frames(H, 1)
+	local n = #W.posted
+	W.state = "GS_STATE_MULTI_JOIN_GAME"
+	frames(H, 1)
+	W.state = "GS_STATE_MAIN_MENU"
+	frames(H, 1)
+	eq(#W.posted, n, "not re-posted")
+end)
+
+test("dismiss_popups_leaves_any_joining_popup_alone", function(W)
+	-- QA XFK-4: prefix match, so casing or punctuation drift in the engine text cannot turn
+	-- the guard into a join-cancel loop.
+	local H = boot(W, { dismiss_popups = true })
+	W.state = "GS_STATE_MULTI_JOIN_GAME"
+	W.popup_text = "Joining netgame..."
+	frames(H, 2, true)
+	eq(#W.submits, 0, "left alone")
+end)
+
+
 -- ---- runner -----------------------------------------------------------------------------------
 
 if arg[2] == "--list" then

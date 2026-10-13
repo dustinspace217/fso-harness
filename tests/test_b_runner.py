@@ -105,7 +105,8 @@ def _engine_script(tmp_path: Path) -> Path:
     return script
 
 
-def _run_and_terminate(tmp_runtime, sess, marker: bool) -> tuple[session.Session, bool]:
+def _run_and_terminate(tmp_runtime, sess, marker: bool,
+                       expect_xvfb: bool = True) -> tuple[session.Session, bool]:
     """Start the real runner for `sess`, wait until its engine runs, SIGTERM the runner, and
     return (session record, Xvfb was gone before any test cleanup) once the runner has exited.
 
@@ -126,7 +127,8 @@ def _run_and_terminate(tmp_runtime, sess, marker: bool) -> tuple[session.Session
         assert rec.status == "running", "runner never started the stand-in engine"
         proc.send_signal(signal.SIGTERM)
         assert proc.wait(timeout=30) == 143
-        xvfb_gone = _gone_within(session.load(sess.id).xvfb_pid, 5)
+        xvfb_pid = session.load(sess.id).xvfb_pid
+        xvfb_gone = _gone_within(xvfb_pid, 5) if expect_xvfb else xvfb_pid is None
     finally:
         # Normally nothing is left; ProcessLookupError then is the expected outcome.
         with contextlib.suppress(ProcessLookupError):
@@ -379,3 +381,18 @@ def test_a_stop_at_the_runtime_limit_still_reaps_the_engine(tmp_runtime, sigmask
     assert runner._run_engine(s.id, {}, time.monotonic()) == 143
     assert reaped == [4242] and recorded == ["stop"]
 
+
+
+@pytest.mark.usefixtures("no_prior_oom")
+def test_a_standalone_session_runs_without_xvfb_or_display(tmp_runtime, tmp_path):
+    # Plan Task 6: a standalone multiplayer server has no window, so the runner starts no Xvfb
+    # and the engine gets no DISPLAY at all (a stray one would reach the user's desktop).
+    script = tmp_path / "fake_engine.sh"
+    script.write_text("#!/bin/sh\nenv > \"$FSO_PREFERENCES_PATH/env.txt\"\nexec sleep 120\n")
+    script.chmod(0o755)
+    s = _mk(binary=str(script), role="standalone", match="m0a1b2c3d", port=7808)
+    got, _ = _run_and_terminate(tmp_runtime, s, marker=True, expect_xvfb=False)
+    assert got.display is None and got.xvfb_pid is None
+    env_text = (session.prefs_dir(got) / "env.txt").read_text()
+    assert "\nDISPLAY=" not in env_text and not env_text.startswith("DISPLAY=")
+    assert got.ended_by == "stop"

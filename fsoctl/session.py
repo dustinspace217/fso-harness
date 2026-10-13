@@ -52,6 +52,14 @@ class Session:
     ended_by: str | None = None
     runtime_sec: int | None = None    # the runner's own deadline; RuntimeMaxSec is 60 s later
     memory_max: str | None = None     # the scope's MemoryMax property value, e.g. "2097152K"
+    # Multiplayer (spec section 4): the match this session joined, its role, the local UDP port
+    # the engine binds, and for clients the server address. None/False for ordinary sessions.
+    match: str | None = None
+    role: str | None = None           # "standalone" | "host" | "client"
+    port: int | None = None
+    connect: str = "127.0.0.1:7808"
+    game_name: str | None = None
+    closed: bool = False
 
 
 def run_dir(sess: Session) -> Path:

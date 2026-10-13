@@ -168,6 +168,7 @@ local function init_switch_status()
 	if H.switches.pilot_mode == "create" then H.switch_status.pilot_mode = "pending" end
 	if H.switches.skip_command_briefing then H.switch_status.skip_command_briefing = "pending" end
 	if H.switches.skip_briefing then H.switch_status.skip_briefing = "pending" end
+	if H.switches.multi_role == "client" then H.switch_status.multi_join = "pending" end
 end
 
 -- On Game Init: read the startup switches and the eval opt-in the harness left in the channel.
@@ -332,7 +333,15 @@ end
 -- override request makes the engine keep our choice (probe results section 2).
 local function handle_popup()
 	local choice = H.pending_popup_choice
-	if choice == nil and H.switches.dismiss_popups then choice = 0 end
+	-- The join screen's "Joining netgame" box has one button, Cancel (multiui.cpp:1000):
+	-- dismissing it abandons the join (probe-results 21.1), so dismiss_popups leaves it alone.
+	-- An explicit answer_popup still works, which is how an agent cancels a stuck join.
+	-- Prefix match (QA XFK-4): a build that changes the text's casing or punctuation must not
+	-- turn the guard into a join-cancel loop.
+	local joining = H.popup ~= nil and string.sub(H.popup, 1, 7) == "Joining"
+	if choice == nil and H.switches.dismiss_popups and not joining then
+		choice = 0
+	end
 	if choice == nil then return end
 	H.pending_popup_choice = nil
 	log_popup(H.popup, choice)
@@ -1283,15 +1292,71 @@ end
 H.on_state("GS_STATE_INITIAL_PLAYER_SELECT", function()
 	if H.switches.pilot_mode ~= "create" then return end
 	local name = H.switches.pilot_name or "HarnessPilot"
-	local created = ui.PilotSelect.createPilot(name, false)
-	H.event("createPilot " .. name .. " -> " .. tostring(created))
+	-- Multiplayer roles need a multiplayer pilot: the main hall refuses the multiplayer door
+	-- to a single-player one (probe-results 21.1: createPilot(name, true) works).
+	local multi = H.switches.pilot_multi == true
+	local created = ui.PilotSelect.createPilot(name, multi)
+	H.event("createPilot " .. name .. " multi=" .. tostring(multi) .. " -> " .. tostring(created))
 	if created ~= true then
 		H.set_switch("pilot_mode", "failed: createPilot(" .. name .. ") returned " .. tostring(created))
 		return
 	end
-	ui.PilotSelect.selectPilot(name, false)
+	ui.PilotSelect.selectPilot(name, multi)
 	H.set_switch("pilot_mode", "done")
 end, "pilot_mode")
+
+-- Clients: the main hall's multiplayer button posts GS_EVENT_MULTI_JOIN_GAME (mainhallmenu.cpp:
+-- 387); nothing on the command line does, and -connect only acts once the join screen is up.
+-- Posting the event is enough (probe-results 21.1).
+H.on_state("GS_STATE_MAIN_MENU", function()
+	if H.switches.multi_role ~= "client" then return end
+	-- Once (QA CR-5): hooks run on every entry to a state, and the main hall is where a
+	-- cancelled join returns, so a cancel (answer_popup) is final rather than retried forever.
+	if H.switch_status.multi_join ~= "pending" then return end
+	local ok = ba.postGameEvent(ba.GameEvents["GS_EVENT_MULTI_JOIN_GAME"])
+	H.event("multi join -> " .. tostring(ok))
+	H.set_switch("multi_join", ok and "done" or "failed: postGameEvent returned false")
+end, "multi_join")
+
+-- The first player to join a standalone becomes the host and lands on the "start game" screen
+-- (game name, password, rank limits), which waits for Accept; Accept only posts
+-- GS_EVENT_MULTI_HOST_SETUP (multiui.cpp:2662). Without this the client sat there for the whole
+-- run (probe-results 21.2). Not a switch of its own: it is part of joining.
+-- After the briefing, multiplayer goes back to the sync screen, where the HOST presses Launch;
+-- Launch is multi_sync_start_countdown() (multiui.cpp:7887), exposed as ui.MultiSync.
+-- startCountdown. The sync screen also appears BEFORE the briefing (mission load sync), where a
+-- launch would be wrong, so it fires only once the briefing has been seen (engine test:
+-- the client sat in GS_STATE_MULTI_MISSION_SYNC for 300 s before this hook existed).
+-- Only the session the harness marked multi_launch (the one given --mission, the intended host)
+-- presses it: a non-host client's call reaches the server too, and on a debug build trips a
+-- live Assert (QA SL-3, XFA-2). The latch is cleared after it fires and whenever a mission's
+-- flow restarts (host/client setup, debrief), so a second mission's pre-briefing sync does not
+-- launch (QA SL-2, CR-4, TA-9).
+H.multi_briefed = false
+H.on_state("GS_STATE_BRIEFING", function()
+	if H.switches.multi_launch == true then H.multi_briefed = true end
+end)
+for _, reset_state in ipairs({ "GS_STATE_MULTI_HOST_SETUP", "GS_STATE_MULTI_CLIENT_SETUP",
+                               "GS_STATE_DEBRIEF" }) do
+	H.on_state(reset_state, function() H.multi_briefed = false end)
+end
+
+H.on_state("GS_STATE_MULTI_MISSION_SYNC", function()
+	if H.switches.multi_launch ~= true or not H.multi_briefed then return end
+	H.multi_briefed = false
+	if not (ui.MultiSync and ui.MultiSync.startCountdown) then
+		H.event("multi launch: ui.MultiSync.startCountdown missing in this build")
+		return
+	end
+	ui.MultiSync.startCountdown()
+	H.event("multi launch countdown started")
+end)
+
+H.on_state("GS_STATE_MULTI_START_GAME", function()
+	if H.switches.multi_role ~= "client" then return end
+	local ok = ba.postGameEvent(ba.GameEvents["GS_EVENT_MULTI_HOST_SETUP"])
+	H.event("multi start-game accept -> " .. tostring(ok))
+end, "multi_join")
 
 H.on_state("GS_STATE_CMD_BRIEF", function()
 	if not H.switches.skip_command_briefing then return end

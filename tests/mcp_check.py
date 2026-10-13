@@ -101,6 +101,7 @@ CASES = {
     "frame_stats": dict(mission="m.fs2", seconds=5),
     "compare": dict(a="/a", b="/b", steps_file="/s.json", image_tol=0.02),
     "renderer_compare": dict(steps_file="/s.json"),
+    "match_create": dict(label="-l"), "match_list": {}, "match_remove": dict(id="m0a1b2c3d"),
 }
 parser = cli.build_parser()
 tool_names = {t.name for t in asyncio.run(server.mcp.list_tools())}

@@ -116,6 +116,57 @@ reports them.
 `fsoctl <verb> --help` lists every option. Scenario files for `compare` are JSON lists of steps,
 see `fsoctl/scenario.py`.
 
+## Multiplayer
+
+A multiplayer game runs inside a *match*: one private, loopback-only network held open by a
+sleeping holder process in its own systemd scope (`unshare --user --map-root-user --net`, no root
+anywhere). The engine binds its UDP game port on every interface and has no bind-address option,
+and the standalone server opens a web panel on TCP 8080, so containment comes from the network
+itself: inside a match those sockets exist, on the real network they never do, and a packet sent
+out of the match fails with "network unreachable" (kernel-enforced; probed and tested on every
+run). The online tracker is never enabled by the harness.
+
+```
+fsoctl match create                      # -> {"id": "m1a2b3c4d", "holder_pid": ...}
+fsoctl launch --match m1a2b3c4d --role standalone
+fsoctl launch --match m1a2b3c4d --role client --pilot create:Alpha --mission M-01.fs2 \
+       --skip-movies --dismiss-popups --skip-briefing
+fsoctl match list                        # matches, liveness, the sessions in each
+fsoctl match remove m1a2b3c4d            # stops the sessions first, then the network
+```
+
+Roles: `standalone` (`-standalone`, no window, no pilot, no mission; readiness is its listening
+socket), `host` (`-startgame`, a player who hosts), `client` (`-connect`, auto-joins; the first
+client of a standalone game becomes the host). Every engine process binds its own port, so the
+sessions in a match get 7808, 7809, ... A `--mission` on a host or client becomes the engine's
+`-almission`, which the host player consumes to start that mission with no human; the bridge
+posts the join-screen, start-game and sync-launch events a human would click. Each session is an
+ordinary harness session otherwise (own prefs, pilot, bridge, scope, caps, `stop`); `status`
+adds `network: alive|dead`, and a dead network makes its sessions `dead-network`.
+
+What it is and is not. The containment is IP containment: inside a match there is no route out
+and no interface but loopback, so no packet can leave. Pathname unix sockets are not part of a
+network namespace and cross the boundary both ways; the one the engine uses is the X socket of
+its own Xvfb, and the host's resolver answers name lookups the same way (hostnames resolve, nothing
+can be sent to the answer). The holder's death is a loss of the recorded handle, not of the
+network: the engine keeps its namespace alive until it exits and is still stopped through its own
+scope; `status` and `list` say `dead-network`, and the match is written back as `dead` once.
+
+Ordinary sessions are NOT contained: every engine run, single-player included, binds UDP 7808 on
+every interface of the real machine for its whole life (the engine does this unconditionally;
+measured 2026-10-13), so a harness session outside a match is as visible on the LAN as the game
+itself. A private network for every session is a possible later change.
+
+Limits of this version: one server (standalone or host) and one mission-carrying session per
+match; a host launched with `--mission` starts its mission at once, so a client cannot join it
+(a client cannot enter a mission in progress), which is why the recipe uses a standalone and gives
+the mission to the first client; the standalone's web panel (basic auth, engine defaults
+`admin`/`admin`) is reachable only from inside the match and its mission/netgame copies were stale
+in testing; a match counts zero sessions against the session cap (default 3: a server and two
+clients) and matches have their own cap (`FSO_HARNESS_MAX_MATCHES`, default 8); the holder lives
+24 h and sessions in a match may not be given a longer `--runtime`; one machine only (no LAN
+peers) in this version.
+
 ## Limits (honest list)
 
 - **No exact replay.** FSO has no fixed timestep and seeds some randomness from the OS; `replay`

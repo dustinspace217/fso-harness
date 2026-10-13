@@ -4,8 +4,8 @@
 Phase: post-v1 maintenance (v1 Tasks 1-23 done and published)
 Done: v1; demo-findings fix wave + QA; Lua playtest guidance (de45e8c); `lua` pre-send check
 (ROUTINE QA, 70/70); switchable telemetry + collision alerts (HIGH-RISK QA + cross-family closed,
-manifest 58/58; UNCOMMITTED, awaiting Dustin's word to commit)
-Next: Dustin: commit/push, and the Proposal below (throttle after a collision stop); then the
+manifest 58/58); published 2026-10-12 as public 43439b2 (local ce44727)
+Next: Dustin's call on the Proposal below (throttle after a collision stop); then the
 agreed input work (named-action input, relative mouse, keyboard/F-key; joystick OUT)
 Blocked: nothing
 

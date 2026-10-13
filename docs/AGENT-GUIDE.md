@@ -144,6 +144,39 @@ runs the same scenario on two builds side by side (write the steps as a scenario
    `last_row_t` beside `now` (a gap means rows stopped, e.g. no player ship). 60 s at 1 Hz is
    about 4.6 KB.
 
+## Reproduce a multiplayer bug
+
+Every multiplayer session runs inside a *match*: a private, loopback-only network that the LAN and
+the internet cannot see (no port is ever opened on the real network; the online tracker is never
+enabled). Create one, launch a server and clients into it, drive them like any session, remove it.
+
+1. `match_create()` -> `{"id": "m...", ...}`.
+2. Server: `launch(match=<id>, role="standalone")` (no window; `status` shows `listening`), or a
+   player host: `launch(match=<id>, role="host", pilot="create:Host", mission="M-01.fs2")`.
+3. Clients: `launch(match=<id>, role="client", pilot="create:Alpha", skip_movies=true,
+   dismiss_popups=true)`; each gets the next free port and auto-joins the server. The first
+   client of a standalone game is the game host; give it `mission="M-01.fs2"` (a multiplayer
+   mission; retail coop missions are M-01..M-04) plus `skip_briefing=true` and the bridge takes
+   it from the join screen through host setup, the briefing and the launch countdown into
+   `GS_STATE_GAME_PLAY` with no human. A standalone takes no mission and no pilot.
+4. `wait_for(id, state="GS_STATE_MULTI_HOST_SETUP")` / `..._CLIENT_SETUP` / `GS_STATE_GAME_PLAY`;
+   then `sexp`, `lua`, `state`, `pilot`, `screenshot` as usual on each client.
+5. Read both sides: `log(<client>)`; the standalone has no bridge, so read its
+   `<prefs>/<mod>/data/multi.log` and `event.log` from the run folder (`status` shows the paths).
+6. `match_remove(<id>)` stops every session in the match first, then the network.
+
+Facts: a session's port is in `launch`'s result and a client's default `connect` is the match's
+live server; `status` and `list` show `network: alive|dead` and `dead-network`. One server and
+one mission-carrying session per match; give the mission to the first client of a standalone
+game (a host given a mission starts it at once, before anyone can join). Host and client need
+`pilot: "create:<name>"`. The `dismiss_popups` switch leaves the "Joining netgame" box alone
+(its only button is Cancel) and a cancelled join is final. Hostnames still resolve inside a
+match (the host's resolver answers over a local socket) but nothing can be sent to the answer;
+ordinary (non-match) sessions bind UDP 7808 on the real network, as the engine always does. The
+standalone's web panel (TCP 8080, basic auth admin/admin, engine defaults) exists only inside
+the match and its mission/netgame copies were stale in testing; do not rely on it. Open
+multiplayer issues: label `multi` upstream; the maintainers' checklist is #6927.
+
 ## Read a crash
 
 `crash_report <id>`: exit signal, the core's backtrace (debug builds name the functions), the last

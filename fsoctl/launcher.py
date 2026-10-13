@@ -11,12 +11,13 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import bridge_install, channel, paths, renderer, scope, session, xwin
+from . import bridge_install, channel, match, paths, renderer, scope, session, xwin
 from .cli import register
 from .errors import (EXIT_ENGINE, EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT,
                      EXIT_USAGE, HarnessError)
@@ -26,7 +27,11 @@ STALE_SEC = 5.0         # contract C3: a heartbeat older than this is stale
 _LOCK_WAIT = 60.0       # seconds to wait for launch.lock (held for one install + scope start)
 _STARTING_GRACE = 120.0  # cleanup leaves a "starting" record alone this long (see _removable)
 # Extra engine arguments the caller may not pass (contract C10), see _check_extra_args.
-_HARNESS_ONLY_ARGS = ("-portable_mode", "-mod", "-start_mission", "-pilot")
+_HARNESS_ONLY_ARGS = ("-portable_mode", "-mod", "-start_mission", "-pilot",
+                      # Multiplayer flags (QA SA-2): from an ordinary session they would start a
+                      # server or host on the REAL network; --match/--role is the only way in.
+                      "-standalone", "-startgame", "-connect", "-port", "-gamename", "-closed",
+                      "-almission", "-gateway_ip")
 # Flags that make the engine write a file into its working folder (fopen with a relative name):
 # -output_* (sexps.html, scripting.*), -profile_write_file (profiling.csv), -get_flags
 # (flags.lch, cmdline.cpp:1517), -controlconfig_tbl (controlconfigdefaults.tbl,
@@ -43,7 +48,10 @@ RUNTIME_BACKSTOP_SEC = 60
 _RUNNER_POLL = 0.1
 _SIDE_NAME = re.compile(r"^[0-9a-f]{8}$")   # token_hex(4), how fred/docs/frame_stats name them
 _SWITCH_NAMES = ("skip_movies", "pilot_mode", "pilot_name", "dismiss_popups",
-                 "skip_command_briefing", "skip_briefing", "noninteractive")
+                 "skip_command_briefing", "skip_briefing", "noninteractive",
+                 "pilot_multi", "multi_role", "multi_launch")
+ROLES = ("standalone", "host", "client")
+DEFAULT_GAME_PORT = 7808                      # DEFAULT_GAME_PORT in the engine's psnet2.h
 
 
 @dataclass
@@ -69,6 +77,28 @@ class LaunchRequest:
     runtime_sec: int = 1800
     ready_timeout: float = 240.0
     cwd: str | None = None               # working folder; None = FS2PATH (see shadowdir)
+    match: str | None = None             # a `fsoctl match create` id; required with role
+    role: str | None = None              # one of ROLES
+    port: int | None = None              # local UDP port; None = next free in the match
+    connect: str | None = None           # client: server IP:PORT; None = the match's live server
+    game_name: str | None = None         # host/standalone: shown in the join list; None = match id
+    closed: bool = False                 # host: -closed
+
+    @property
+    def pilot_multi(self) -> bool:
+        """Multiplayer roles create multiplayer pilots (a single-player pilot cannot join)."""
+        return self.role in ("host", "client")
+
+    @property
+    def multi_role(self) -> str | None:
+        """What the bridge needs to know: it posts the join-screen events only for clients."""
+        return self.role
+
+    @property
+    def multi_launch(self) -> bool:
+        """Only the session given --mission (the intended host) presses Launch on the sync screen
+        (QA SL-3); every other client would otherwise press it too."""
+        return self.role in ("host", "client") and bool(self.mission)
 
 
 def _qtfred_mission_path(sess: session.Session) -> str:
@@ -98,19 +128,76 @@ def build_argv(sess: session.Session) -> list[str]:
     if sess.kind == "qtfred":
         return _qtfred_argv(sess)
     sw = sess.switches
-    argv = [sess.binary, "-mod", ",".join([paths.BRIDGE_MOD, *sess.mods]),
-            "-window", "-res", f"{sess.width}x{sess.height}", "-nosound", "-no_unfocused_pause"]
+    argv = [sess.binary, "-mod", ",".join([paths.BRIDGE_MOD, *sess.mods]), "-nosound"]
+    if sess.role != "standalone":
+        # The standalone has no window (stand_gui-unix.cpp); everything else draws into Xvfb.
+        argv += ["-window", "-res", f"{sess.width}x{sess.height}", "-no_unfocused_pause"]
     if sw.get("noninteractive", True):
         argv.append("-noninteractive")
     if sw.get("skip_movies"):
         argv.append("-nomovies")
     if sw.get("pilot_mode") == "existing":
         argv += ["-pilot", sw.get("pilot_name", "HarnessPilot")]
-    if sess.mission:
+    if sess.role is None and sess.mission:
         argv += ["-start_mission", sess.mission]
+    if sess.role is not None:
+        argv += _multi_argv(sess)
     if sess.renderer == "vulkan":
         argv.append("-vulkan")
     return argv + sess.extra_args
+
+
+def _multi_argv(sess: session.Session) -> list[str]:
+    """Return the role's engine flags (spec section 4; cmdline.cpp:210-303, 429)."""
+    name = sess.game_name or sess.match
+    out = ["-port", str(sess.port)]
+    if sess.role == "standalone":
+        out.insert(0, "-standalone")
+    elif sess.role == "host":
+        out += ["-startgame", "-gamename", name]
+        if sess.closed:
+            out.append("-closed")
+    else:
+        out += ["-connect", sess.connect]
+    if sess.mission:
+        # -almission takes the mission NAME; the engine adds .fs2 (multiui.cpp:3674). The host
+        # player consumes it and starts the mission with no human (probe-results 21.2).
+        name = sess.mission[:-4] if sess.mission.lower().endswith(".fs2") else sess.mission
+        out += ["-almission", name]
+    return out
+
+
+def multi_cfg_text(game_name: str) -> str:
+    """Return the standalone's multi.cfg: a name and the (private) web panel port; never +pxo."""
+    return f"+name {game_name}\n+webapi_server_port 8080\n"
+
+
+def assign_port(mid: str, wanted: int | None) -> int:
+    """Return the local port for a new session in match `mid`: `wanted` if free there, else the
+    first free port from DEFAULT_GAME_PORT up. Every engine binds [::]:<port>, so two sessions in
+    one namespace cannot share a port (probe-results 21.2; plan Review Focus 1)."""
+    # Live scopes only (the cap's predicate): a stopped server's port is free again, otherwise a
+    # relaunched server moves to 7809 while clients still default to 7808 (QA SL-1/CR-7/TA-3).
+    used = {s.port for s in sessions_in_match(mid) if s.port and not scope.is_gone(s.scope)}
+    if wanted is not None:
+        if wanted in used:
+            raise HarnessError(EXIT_USAGE, f"port {wanted} is already used in match {mid}",
+                               "leave --port unset to take the next free one")
+        return wanted
+    port = DEFAULT_GAME_PORT
+    while port in used:          # bounded: `used` holds at most one port per live session
+        port += 1
+    return port
+
+
+def default_connect(mid: str) -> str:
+    """Return the address a client joins by default: the match's live standalone or host, else
+    the default port (QA CR-6/SL-1: the docs promised "the match's server"; the code had a
+    constant)."""
+    for s in sessions_in_match(mid):
+        if s.role in ("standalone", "host") and s.port and not scope.is_gone(s.scope):
+            return f"127.0.0.1:{s.port}"
+    return f"127.0.0.1:{DEFAULT_GAME_PORT}"
 
 
 # unit -> (monotonic time of the last systemd check, scope was active). Lives for one fsoctl
@@ -219,7 +306,8 @@ def _check_extra_args(req: LaunchRequest) -> None:
             raise HarnessError(EXIT_USAGE, f"extra engine argument {arg} is not allowed",
                                "the harness sets -mod, -start_mission and -pilot itself (use "
                                "--mods, --mission, --pilot); -portable_mode would move the "
-                               "engine's config into the game folder")
+                               "engine's config into the game folder; multiplayer flags are set "
+                               "by --match/--role (fsoctl match create)")
         if flag.startswith(_OUTPUT_ARGS) and not in_shadow:
             raise HarnessError(EXIT_USAGE, f"extra engine argument {arg} is not allowed here",
                                "it writes files into the working folder, which is the game "
@@ -240,11 +328,117 @@ def _check_folders(req: LaunchRequest) -> None:
                                "name mod folders inside FS2PATH, e.g. MVPS-4.7.3")
 
 
+def _check_role(req: LaunchRequest) -> None:
+    """Refuse a multiplayer request that is incomplete or points at a dead match."""
+    if req.role is None and req.match is None:
+        # QA TA-7: multiplayer values without a role used to be dropped silently.
+        if req.port is not None or req.connect is not None or req.game_name or req.closed:
+            raise HarnessError(EXIT_USAGE, "--port/--connect/--game-name/--closed need --match "
+                               "and --role", "fsoctl match create, then launch --match <id> "
+                               "--role standalone|host|client")
+        return
+    if req.role is None or req.match is None:
+        raise HarnessError(EXIT_USAGE, "--match and --role go together",
+                           "fsoctl match create, then launch --match <id> "
+                           "--role standalone|host|client")
+    if req.role not in ROLES:
+        raise HarnessError(EXIT_USAGE, f"unknown role {req.role!r}",
+                           f"use one of {', '.join(ROLES)}")
+    if req.kind != "game":
+        raise HarnessError(EXIT_USAGE, "qtFRED has no multiplayer role", "drop --match/--role")
+    if os.getuid() == 0:                        # spec 5.4 (QA TA-10): same rule as match create
+        raise HarnessError(EXIT_REFUSED, "multiplayer sessions refuse to run as root",
+                           "run as your normal user")
+    if req.role == "standalone" and (req.mission or req.pilot_source):
+        # -almission is consumed by the host player, never by the standalone (probe-results 21.2);
+        # a standalone has no pilot at all.
+        raise HarnessError(EXIT_USAGE, "a standalone server takes no mission and no pilot",
+                           "give --mission to the host or to the first client")
+    if req.role == "standalone" and req.renderer != "opengl":
+        # It draws nothing (QA XFA-5): the Vulkan check after launch would stop it for no reason.
+        raise HarnessError(EXIT_USAGE, "a standalone server has no renderer", "drop --vulkan")
+    if req.role != "standalone" and req.pilot_mode != "create":
+        # The bridge creates a MULTIPLAYER pilot only in create mode; the chooser sits on the
+        # pilot screen and an existing single-player pilot is refused at the multiplayer door
+        # (QA CR-8). An existing multiplayer pilot is a later feature.
+        raise HarnessError(EXIT_USAGE, f"role {req.role} needs a created multiplayer pilot",
+                           "pass --pilot create:<name>")
+    if req.runtime_sec > match.HOLDER_RUNTIME_SEC:
+        # The holder lives HOLDER_RUNTIME_SEC at most; a longer session would outlive its
+        # network by design (QA SL-9 / CR-12).
+        raise HarnessError(EXIT_USAGE, f"--runtime {req.runtime_sec} is longer than a match's "
+                           f"network lives ({match.HOLDER_RUNTIME_SEC} s)",
+                           "pass a shorter --runtime, or create a new match later")
+    _check_multi_values(req)
+    _check_match_room(req)
+
+
+def _check_match_room(req: LaunchRequest) -> None:
+    """Refuse a join into a match that is not alive, already has a server, or already has the
+    session that carries the mission."""
+    m = match.load(str(req.match))              # EXIT_NOT_FOUND
+    if not match.alive(m):
+        raise HarnessError(EXIT_REFUSED, f"match {req.match} is dead",
+                           "create a new one with `fsoctl match create`")
+    live = [s for s in sessions_in_match(str(req.match)) if not scope.is_gone(s.scope)]
+    if req.role in ("standalone", "host") and any(s.role in ("standalone", "host") for s in live):
+        # One server per match (QA XFK-2): the standalone's web panel port (8080) is not per
+        # session, and a second server in one network would collide on it.
+        raise HarnessError(EXIT_USAGE, f"match {req.match} already has a server",
+                           "create another match for a second server")
+    if req.mission and any(s.mission for s in live):
+        # One mission per match (QA XFK-5): -almission is consumed by whichever session becomes
+        # host, so two carriers would make which mission starts order-dependent.
+        raise HarnessError(EXIT_USAGE, f"match {req.match} already has a session carrying a "
+                           "mission", "give --mission to one session per match")
+
+
+# What may appear in the values that reach the engine's command line or multi.cfg. WHY so strict:
+# the engine joins argv back into one string and re-splits it on spaces and dashes (cmdline.cpp),
+# so a game name "x -pilot y" would add a flag, and multi.cfg is line-based, so a newline in the
+# name would add a `+pxo` line (spec section 5.3). A mission name is a file stem: no separators,
+# and no leading "-" or ".": a value starting with "-" is not taken as the flag's value, it is
+# parsed as a flag of its own (cmdline.cpp:745-749; QA SA-1: `--mission -portable_mode`).
+_GAME_NAME_RE = re.compile(r"^[A-Za-z0-9_.'!]+$")
+_CONNECT_RE = re.compile(r"^(\d{1,3}(\.\d{1,3}){3}|\[[0-9A-Fa-f:]+\]):\d{1,5}$")
+_MISSION_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+# The engine takes a port <= 1023 as its default (psnet2.cpp:441-443, psnet_init), and a port
+# is a 16-bit value, so a recorded port and the bound one would disagree (QA SA-4).
+PORT_MIN, PORT_MAX = 1024, 65535
+
+
+def _check_mission_name(req: LaunchRequest) -> None:
+    """Refuse (EXIT_USAGE) a mission value that is not a plain file name, for EVERY game session:
+    both -start_mission and -almission would otherwise carry it to the engine's re-split."""
+    if req.kind == "game" and req.mission and not _MISSION_RE.match(req.mission):
+        raise HarnessError(EXIT_USAGE, f"mission {req.mission!r} is not a plain file name",
+                           "pass the mission's file name, e.g. SM1-01.fs2 (letters, digits, "
+                           "_ . - and no leading - or .)")
+
+
+def _check_multi_values(req: LaunchRequest) -> None:
+    """Refuse (EXIT_USAGE) multiplayer values that could carry extra flags or config lines."""
+    if req.game_name is not None and not _GAME_NAME_RE.match(req.game_name):
+        raise HarnessError(EXIT_USAGE, f"game name {req.game_name!r} may only contain letters, "
+                           "digits and _ . ' !", "the name reaches the engine command line and "
+                           "multi.cfg; pick a plain one")
+    if req.role == "client" and req.connect is not None and not _CONNECT_RE.match(req.connect):
+        raise HarnessError(EXIT_USAGE, f"--connect {req.connect!r} is not IP:PORT",
+                           "use 127.0.0.1:7808 or [::1]:7808 (a match is loopback only, so a "
+                           "hostname cannot be right)")
+    if req.port is not None and not PORT_MIN <= req.port <= PORT_MAX:
+        raise HarnessError(EXIT_USAGE, f"--port {req.port} is outside {PORT_MIN}..{PORT_MAX}",
+                           "the engine silently remaps ports below 1024 and wraps larger ones; "
+                           "leave --port unset to take the next free one")
+
+
 def _validate(req: LaunchRequest) -> None:
     """Refuse a launch request before anything is created (EXIT_USAGE / EXIT_REFUSED)."""
     _check_binary(req.binary)
     _check_folders(req)
     _check_extra_args(req)
+    _check_mission_name(req)
+    _check_role(req)
     if not isinstance(req.runtime_sec, int) or req.runtime_sec < 1:
         # Every session runs under a hard runtime cap; 0 was never "unlimited" (QA XFK-2).
         raise HarnessError(EXIT_USAGE, f"runtime {req.runtime_sec!r} is not a positive number of "
@@ -289,7 +483,12 @@ def _prepare(req: LaunchRequest,
                                renderer=req.renderer, width=req.width, height=req.height,
                                switches={k: getattr(req, k) for k in _SWITCH_NAMES},
                                allow_eval=req.allow_eval, extra_args=req.extra_args,
-                               cwd=req.cwd, runtime_sec=req.runtime_sec, memory_max=memory_max)
+                               cwd=req.cwd, runtime_sec=req.runtime_sec, memory_max=memory_max,
+                               match=req.match, role=req.role,
+                               port=assign_port(req.match, req.port) if req.match else None,
+                               connect=(req.connect or default_connect(req.match)
+                                        if req.match else f"127.0.0.1:{DEFAULT_GAME_PORT}"),
+                               game_name=req.game_name, closed=req.closed)
     try:
         if req.kind == "game":
             chan = paths.channel_dir(session.prefs_dir(sess))
@@ -297,6 +496,13 @@ def _prepare(req: LaunchRequest,
             (chan / "switches.txt").write_text(json.dumps(sess.switches))
             if req.allow_eval:
                 (chan / "allow_eval").touch()
+        if req.role is not None:
+            # Read by the engine through cfile (CF_TYPE_DATA), so the session's private prefs
+            # data/ wins over anything in the game folder (spec section 3). Every match role gets
+            # one (QA SA-8): a +pxo left in the user's game folder must never reach a host.
+            cfg = session.prefs_dir(sess) / "data" / "multi.cfg"
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(multi_cfg_text(str(req.game_name or req.match)))
         if req.pilot_source:
             _copy_pilot(Path(req.pilot_source), req.pilot_name, session.prefs_dir(sess))
     except BaseException as e:      # incl. SystemExit/KeyboardInterrupt (fix-wave-2 R3)
@@ -377,8 +583,14 @@ def _start(req: LaunchRequest) -> tuple[session.Session, bool]:
         check_capacity()
         sess, refreshed = _prepare(req, memory_max)
         try:
-            scope.start(sess.scope, [sys.executable, "-m", "fsoctl.runner", sess.id],
-                        _runner_env(), session.run_dir(sess) / "runner.log", props)
+            runner_argv = [sys.executable, "-m", "fsoctl.runner", sess.id]
+            if sess.match:
+                # The runner, and so Xvfb and the engine, live in the match's network. Only the
+                # network namespace changes: files, the X socket (a filesystem socket) and the
+                # bridge channel are the same as for any session (spec section 4).
+                runner_argv = match.nsenter_prefix(match.load(sess.match)) + runner_argv
+            scope.start(sess.scope, runner_argv, _runner_env(),
+                        session.run_dir(sess) / "runner.log", props)
         except HarnessError as e:
             _abandon(sess.id, e)
             raise
@@ -401,8 +613,49 @@ def _quote_heartbeat(err: HarnessError, sess: session.Session) -> None:
         err.message += f" (bridge errors: {hb['errors']}, last: {hb.get('last_error')})"
 
 
+def listening(sess: session.Session) -> bool:
+    """True when a UDP socket on the session's port exists inside its match (standalone readiness).
+
+    Asked through nsenter because the socket exists only in the private network; `ss` on the real
+    network must show nothing, which is the point (spec section 5.1).
+    """
+    try:
+        r = match.run_inside(match.load(str(sess.match)),
+                             ["ss", "-H", "-lun", f"sport = :{sess.port}"])
+    except (HarnessError, subprocess.TimeoutExpired):
+        # A holder that died between two reads, or an `ss` that hangs, is "not listening", never
+        # a crashed status read (QA SL-6).
+        return False
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _wait_listening(req: LaunchRequest, sid: str) -> None:
+    """Block (bounded) until the standalone listens; EXIT_TIMEOUT / EXIT_ENGINE otherwise.
+
+    A standalone has no bridge (no window, no Lua UI), so the heartbeat cannot be its readiness;
+    the socket it binds is.
+    """
+    deadline = time.monotonic() + req.ready_timeout
+    port = None
+    while time.monotonic() < deadline:      # bounded by the deadline
+        s = session.load(sid)
+        port = s.port
+        if s.status in ("exited", "failed"):
+            raise HarnessError(EXIT_ENGINE, "the standalone server exited during startup",
+                               "see `fsoctl log <id>`")
+        if s.status == "running" and listening(s):
+            return
+        time.sleep(0.5)
+    raise HarnessError(EXIT_TIMEOUT, f"the standalone never listened on port {port} in "
+                       f"{req.ready_timeout:.0f}s", "see `fsoctl log <id>`")
+
+
 def _wait_ready(req: LaunchRequest, sid: str) -> dict:
-    """Block (bounded) until the session is ready; return the first heartbeat ({} for qtFRED)."""
+    """Block (bounded) until the session is ready; return the first heartbeat ({} for qtFRED and
+    for a standalone server, which has no bridge)."""
+    if req.role == "standalone":
+        _wait_listening(req, sid)
+        return {}
     if req.kind == "game":
         return channel.Channel(session.load(sid)).wait_ready(
             req.ready_timeout, lambda: _alive_or_starting(sid))
@@ -412,6 +665,8 @@ def _wait_ready(req: LaunchRequest, sid: str) -> dict:
 
 def _warnings(req: LaunchRequest, found: dict) -> list[str]:
     """Return launch warnings: an OpenGL game whose renderer could not be confirmed (SF-16)."""
+    if req.role == "standalone":
+        return []                     # draws nothing; "renderer unknown" would be noise
     if req.kind == "game" and req.renderer == "opengl" and found["renderer"] == "unknown":
         return ["renderer unknown: the engine had mapped neither Mesa GL nor a Vulkan driver, so "
                 "the harness cannot confirm what draws the frames"]
@@ -429,7 +684,10 @@ def launch(req: LaunchRequest) -> dict:
     try:
         hb = _wait_ready(req, sess.id)
         sess = session.load(sess.id)
-        found = renderer.classify(renderer.read_maps(sess.engine_pid or 0))
+        if req.role == "standalone":
+            found = {"renderer": "none", "libraries": []}      # no window, nothing mapped
+        else:
+            found = renderer.classify(renderer.read_maps(sess.engine_pid or 0))
         if req.kind == "game" and req.renderer == "vulkan" and found["renderer"] != "vulkan":
             raise HarnessError(EXIT_LAUNCH,
                                f"asked for Vulkan, engine came up as {found['renderer']}",
@@ -448,7 +706,9 @@ def launch(req: LaunchRequest) -> dict:
     return {"id": sess.id, "display": sess.display, **found, "state": hb.get("state"),
             "bridge_refreshed": refreshed, "errors": hb.get("errors"),
             "last_error": hb.get("last_error"), "switches": hb.get("switches"),
-            "warnings": _warnings(req, found)}
+            "warnings": _warnings(req, found), "match": sess.match, "role": sess.role,
+            "port": sess.port,
+            "holder_pid": match.load(sess.match).holder_pid if sess.match else None}
 
 
 def run_to_exit(req: LaunchRequest, timeout: float) -> session.Session:
@@ -509,8 +769,27 @@ def status(sid: str) -> dict:
     sess = session.load(sid)
     hb = channel.Channel(sess).heartbeat()
     age = hb.get("age_sec") if hb else None
-    return {**asdict(sess), "alive": alive(sess), "heartbeat": hb, "heartbeat_age_sec": age,
-            "stale": None if age is None else age > STALE_SEC}
+    network = _network_state(sess)
+    out = {**asdict(sess), "alive": alive(sess), "heartbeat": hb, "heartbeat_age_sec": age,
+           "stale": None if age is None else age > STALE_SEC, "network": network,
+           "listening": (listening(sess) if sess.role == "standalone" and network == "alive"
+                         else None)}
+    if network == "dead" and sess.status in ("starting", "running"):
+        out["status"] = "dead-network"     # see _network_state
+    return out
+
+
+def _network_state(sess: session.Session) -> str | None:
+    """Return "alive" | "dead" for a match session, None for an ordinary one.
+
+    Spec section 5.6: the session record is not rewritten; the read says what the record cannot
+    know. The MATCH record is written back once ("dead", one audit line) by match.observe. The
+    engine may still be running: a member process holds the namespace until it exits, and its
+    own scope can still stop it.
+    """
+    if not sess.match:
+        return None
+    return "alive" if match.alive(match.observe(match.load(sess.match))) else "dead"
 
 
 def bridge_info(sid: str) -> dict:
@@ -633,11 +912,51 @@ def stop(sid: str) -> dict:
             "runner_first": runner_first}
 
 
+def sessions_in_match(mid: str) -> list[session.Session]:
+    """Return the sessions launched into match `mid` (the `match` field; None for ordinary ones)."""
+    return [s for s in session.list_sessions() if getattr(s, "match", None) == mid]
+
+
+def remove_match(mid: str) -> dict:
+    """Stop every session in the match (normal stop path, runner first), then end the holder.
+
+    WHY sessions first (spec section 5.6): an engine must never outlive its network. (A member
+    process keeps the namespace alive on its own and could still be entered through its pid; the
+    point is bookkeeping and the agent's view, not kernel reachability.) WHY a short critical
+    section (QA SL-4/CR-1/TA-8): the launch lock makes "removing" visible to a concurrent launch
+    before the holder dies, so no engine is born into a network being removed; the stops run
+    OUTSIDE the lock because one can take 30 s and would starve every other launch. WHY continue
+    past a failed stop (QA SA-6/SL-12): a scope that survived SIGKILL is stuck in the kernel
+    either way; the holder still ends and the failure is reported.
+    """
+    with session.file_lock(paths.runtime_root() / "launch.lock", _LOCK_WAIT):
+        m = match.load(mid)
+        if m.status in ("alive", "dead"):
+            m.status = "removing"
+            match.save(m)
+        targets = [s for s in sessions_in_match(mid) if s.status in ("starting", "running")]
+    stopped, failed = [], []
+    for s in targets:
+        try:
+            stop(s.id)
+            stopped.append(s.id)
+        except HarnessError as e:
+            failed.append({"id": s.id, "error": e.message})
+    match.end_holder(m)
+    return {"id": mid, "stopped": stopped, "failed": failed, "status": "removed"}
+
+
 def list_all() -> dict:
     """Return a short line per session."""
-    return {"sessions": [{"id": s.id, "kind": s.kind, "status": s.status, "alive": alive(s),
-                          "mission": s.mission, "renderer": s.renderer}
-                         for s in session.list_sessions()]}
+    rows = []
+    for s in session.list_sessions():
+        status = s.status
+        if s.status in ("starting", "running") and _network_state(s) == "dead":
+            status = "dead-network"          # same read-time rule as status() (QA TA-4)
+        rows.append({"id": s.id, "kind": s.kind, "status": status, "alive": alive(s),
+                     "mission": s.mission, "renderer": s.renderer, "role": s.role,
+                     "match": s.match})
+    return {"sessions": rows}
 
 
 def _removable(s: session.Session, now: float, older_than: float) -> bool:
@@ -716,6 +1035,16 @@ def _cleanup_locked(older_than_sec: float) -> dict:
             failed.append({"path": str(session.run_dir(s)), "error": str(e)})
             kept.append(s)
     folders = _cleanup_side_folders(now, older_than_sec, kept, failed)
+    # After the session pass, so a match whose last session was just removed goes in the same
+    # run. A dead or removed match with no session left is just a folder; same age rule.
+    for m in match.list_matches():
+        if match.alive(m) or sessions_in_match(m.id) or now - m.created < older_than_sec:
+            continue
+        try:
+            shutil.rmtree(paths.match_dir(m.id))
+            removed.append(m.id)
+        except OSError as e:
+            failed.append({"path": str(paths.match_dir(m.id)), "error": str(e)})
     return {"removed": removed, "removed_folders": folders, "failed": failed}
 
 
@@ -771,6 +1100,12 @@ def _configure_launch(p: argparse.ArgumentParser) -> None:
     p.add_argument("--allow-eval", action="store_true", help="allow free-form lua/post_event")
     p.add_argument("--runtime", type=int, default=1800, help="hard runtime limit in seconds")
     p.add_argument("--ready-timeout", type=float, default=240.0)
+    p.add_argument("--match", help="multiplayer: the match id from `fsoctl match create`")
+    p.add_argument("--role", choices=ROLES, help="multiplayer: standalone | host | client")
+    p.add_argument("--port", type=int, help="multiplayer: local UDP port (default: next free)")
+    p.add_argument("--connect", help="client: server IP:PORT (default: the match's live server)")
+    p.add_argument("--game-name", help="host/standalone: game name (default: the match id)")
+    p.add_argument("--closed", action="store_true", help="host: start the game closed")
     p.add_argument("extra", nargs="*", help="extra engine arguments, after --")
 
 
@@ -787,7 +1122,8 @@ def _cli_launch(args: argparse.Namespace) -> dict:
         skip_command_briefing=args.skip_command_briefing, skip_briefing=args.skip_briefing,
         noninteractive=not args.interactive, allow_eval=args.allow_eval, extra_args=args.extra,
         kind="qtfred" if args.qtfred else "game", runtime_sec=args.runtime,
-        ready_timeout=args.ready_timeout)
+        ready_timeout=args.ready_timeout, match=args.match, role=args.role, port=args.port,
+        connect=args.connect, game_name=args.game_name, closed=args.closed)
     return launch(req)
 
 

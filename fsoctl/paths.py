@@ -55,6 +55,23 @@ def session_dir(sid: str) -> Path:
     return runtime_root() / sid
 
 
+_MID_RE = re.compile(r"^m[0-9a-f]{8}$")
+
+
+def matches_root() -> Path:
+    """Return the folder that holds one subfolder per match (created, under the runtime root)."""
+    root = runtime_root() / "matches"
+    root.mkdir(exist_ok=True)
+    return root
+
+
+def match_dir(mid: str) -> Path:
+    """Return the folder for match `mid` (validated id; the folder may not exist yet)."""
+    if not _MID_RE.match(mid):
+        raise HarnessError(EXIT_NOT_FOUND, f"not a match id: {mid!r}", "use `fsoctl match list`")
+    return matches_root() / mid
+
+
 def fs2path() -> Path:
     """Return the FreeSpace 2 game directory from $FS2PATH (must exist)."""
     value = os.environ.get("FS2PATH")

@@ -316,3 +316,96 @@ on this build (26.1.0, release, llvmpipe under Xvfb).
   contact start; `pilot` stops on a new one; `state` and `wait_for collision` report it. Engine
   runs: the live-test record kept with the QA record outside this repo (one mission,
   one freighter; rows say which cells ran).
+
+## 21. Multiplayer: pilot, join screen, private network (plan Tasks 1-2, 2026-10-12)
+
+### 21.1 Multiplayer pilot and join-screen entry (Task 1, probes/mp_probe_mod)
+Run: `PROBE_MOD=probes/mp_probe_mod run_probe.sh 150 - -nomovies -connect 127.0.0.1:7808`, no
+server listening. Release build (build-vk), MVPS-4.7.3, software GL.
+- `ui.PilotSelect.createPilot("MpProbe", true)` -> `true`; `selectPilot("MpProbe", true)`; the
+  main hall came up with that pilot (`0.0 state GS_STATE_MAIN_MENU`).
+- Posting `GS_EVENT_MULTI_JOIN_GAME` from `GS_STATE_MAIN_MENU` -> `true`, then
+  `GS_STATE_MULTI_JOIN_GAME`: the event alone is enough; the main hall button's own extra step
+  (`Game_mode = GM_MULTIPLAYER`, mainhallmenu.cpp:380) was not needed to reach the screen.
+- With `-connect` the join screen immediately shows the `Joining netgame` popup
+  (popup_till_condition with one button, &Cancel; multiui.cpp:1000). A hook that submits every
+  popup (probe mod, harness `dismiss_popups`) presses Cancel on it: the engine returned to the
+  main hall and then quit. CONSEQUENCE for the bridge: on a client, never auto-submit a popup
+  whose text is `Joining netgame`.
+- Popups seen on the way: "A new settings file has been created..." (fresh prefs) and the
+  "NEW USER TIP" box in the main hall; both dismissable.
+- Connection speed: no popup (`os_config_read_string(nullptr, "ConnectionSpeed", "Fast")`,
+  multiutil.cpp:2939).
+- Movies: `-nomovies` is required for any probe that reads states; the intro movie plays in a
+  blocking loop (150 s of screenshots showed the cutscene, no frame hook, no state change).
+
+### 21.2 Standalone + client in one private network (Task 2, probes/mp_match_probe.sh)
+Three runs (release build, MVPS-4.7.3): no mission; `-almission M-01` on the client; the same on
+the server. Every run: `3. server sockets on :7808 inside the match: 1`, `4. ... REAL network: 0`,
+`5. web panel :8080 inside / outside: 1 / 0`.
+- Client with `-connect 127.0.0.1:7808 -port 7809` joined over IPv4 inside the namespace: server
+  multi.log `Server accepted MpProbe as new client`, `Connect from [::ffff:127.0.0.0]:7809`,
+  `Accepted TCP connection from MpProbe`; client multi.log `Starting netgame as Host on
+  Standalone server`. No `[::1]` needed. Distinct local ports per process are required and work.
+- States on the client: JOIN_GAME -> `GS_STATE_MULTI_START_GAME` (the "start game" screen: game
+  name, password, rank limits). It waits for the host's Accept, which only posts
+  `GS_EVENT_MULTI_HOST_SETUP` (multiui.cpp:2662); without it the client sat there for the whole
+  run. Posting that event from the frame hook moved it on: -> `GS_STATE_MULTI_HOST_SETUP`.
+- `-almission M-01` on the CLIENT (the host player; `NETINFO_FLAG_AM_MASTER` here means the
+  player who runs create-game, not the standalone): HOST_SETUP -> `GS_STATE_MULTI_MISSION_SYNC`
+  -> `GS_STATE_BRIEFING`, with no human. The briefing then waits for commit (the harness's
+  `skip_briefing` switch). On the SERVER the flag did nothing: the client stayed in HOST_SETUP.
+- Standalone server: `-standalone -port 7808 -nosound -noninteractive`, no display at all
+  (`env -u DISPLAY`), reads `multi.cfg` from `<prefs>/data/`; its logs are
+  `<prefs>/<mod>/data/multi.log` and `event.log` (release build: no fs2_open.log).
+- `Port forward => Failed to init mapping!` in the server log: the engine tried UPnP and could
+  not (no route); harmless, and exactly what containment should produce.
+
+### 21.3 Frame hook in multiplayer states (Task 2)
+The probe mod's `$On Frame` hook (the same hook the bridge's heartbeat uses) ran in
+`GS_STATE_MULTI_JOIN_GAME`, `GS_STATE_MULTI_START_GAME`, `GS_STATE_MULTI_HOST_SETUP`,
+`GS_STATE_MULTI_MISSION_SYNC` and `GS_STATE_BRIEFING`: it logged the state change in each and
+posted events from START_GAME. One caveat: a state entered and left inside a popup's own loop
+(`popup_till_condition`) shows only in the popup's log line, not as a state line.
+
+### 21.4 Found while writing the engine tests (Task 9, 2026-10-12)
+- After the briefing, multiplayer returns to the sync screen and waits for the HOST's Launch,
+  which is `multi_sync_start_countdown()` (multiui.cpp:7887; non-master hosts send the
+  countdown request to the standalone, :8502). Exposed to Lua as `ui.MultiSync.startCountdown()`;
+  the bridge calls it on the post-briefing sync only (the same state also appears before the
+  briefing). Before this the client sat in `GS_STATE_MULTI_MISSION_SYNC` for 300 s.
+- With a warm shader cache and `-nomovies`, a client reaches gameplay in a standalone game in
+  about 10 s on software GL; the 351 s of the first engine run was the 300 s timeout above.
+- Standalone web panel (TCP 8080, inside the match only): HTTP basic auth with multi.cfg's
+  `+webapi_username`/`+webapi_password`, engine defaults `admin`/`admin` (multi_options.h:86);
+  the harness keeps the defaults. `GET /api/1/player` showed the joined player once (at
+  ~40 s into a mission) and `[]` for 60 s of polling in two other runs, so the panel is not
+  used as test evidence.
+  `GET /api/1/netgameInfo` returned `"mission": "", "maxPlayers": 0, "gameState": 1` and
+  `GET /api/1/mission` `"time": 0.0` for 30 s while a mission was running with a player in it:
+  on Linux these copies (`webapi_netgameInfo`, `webui_missiontime`, stand_gui-unix.cpp:365,
+  :790) do not seem to be refreshed in a standalone game. Candidate upstream finding for the
+  multiplayer list; not pursued here. `GET /` gives 500 (no `+webui_root`), expected.
+- The spike script's `kill $SRV` killed a subshell, not the nsenter'd standalone inside it;
+  three servers from the spikes kept running for ~30 min inside their dead holders' namespaces
+  (containment held: nothing on the real network). Fixed with `exec`; the harness itself stops
+  engines through their runner and scope, so this cannot happen to a harness session.
+- QA SA-3, confirmed by the head 2026-10-13 00:45 PDT: an ORDINARY single-player harness
+  session (no match) binds UDP `*:7808` on every interface of the real machine for its whole
+  run (`ss -lunp`: `fs2_open_26_1_0 ... fd=19`; 0 sockets before launch and after stop).
+  `game_init` calls `psnet_init` unconditionally (freespace.cpp:2153), so this is every engine
+  run, harness v1 included; matches contain match sessions only. Design call for the owner:
+  a private network for every session by default, or a documented exposure.
+
+### 21.5 The host role on the engine (QA TA-2, 2026-10-13 00:xx PDT)
+- `-startgame -gamename <name> -port 7808 -almission M-01` with a multiplayer pilot: the host's
+  multi.log shows `Starting netgame as Host/Server`, `Server performing pre-briefing data sync`,
+  `Performing post-briefing data sync` (the bridge's briefing commit and sync Launch), and
+  `Entering mission M-01` 8 s after launch. The host role works with no human.
+- A client launched after the host connected at the socket level (`Server accepted Alpha as new
+  client`, TCP accepted) but stayed in `GS_STATE_MULTI_JOIN_GAME`: the mission was already in
+  progress and a plain join cannot enter a running mission; the host deleted the player 19 s
+  later. So host-plus-client with `-almission` is an ordering problem: the host must hold in
+  host setup until the clients are in, then launch. Not in this slice (xfail test
+  `test_client_joins_player_host`); the standalone-plus-clients topology does not have the
+  problem because the first client IS the host and `-almission` goes to it.

@@ -1,0 +1,71 @@
+#Conditional Hooks
+$Application: FS2_Open
+$On Game Init: [
+	-- Spike A (multiplayer plan Task 1): log state changes, create a MULTIPLAYER pilot, and
+	-- post the join-screen event from the main hall the way the main hall's own button does
+	-- (mainhallmenu.cpp:387). Writes probe.log through the cf API, never io.*.
+	MpLines = {}
+	function MpLog(s)
+		MpLines[#MpLines + 1] = s
+		local f = cf.openFile("probe.log", "w", "data/cache")
+		if f and f:isValid() then
+			f:write(table.concat(MpLines, "\n") .. "\n")
+			f:close()
+		end
+	end
+	MpLast = ""
+	MpDone = {}
+	MpSubmitted = false
+	MpLog("mp probe init")
+]
+$On Frame: [
+	local st = ba.getCurrentGameState()
+	local name = "none"
+	if st and st:isValid() then name = st.Name end
+	if name ~= MpLast then
+		MpLast = name
+		MpLog(string.format("%.1f state %s", ba.getFrametimeOverall() / 65536, name))
+	end
+	if name == "GS_STATE_INITIAL_PLAYER_SELECT" and not MpDone.pilot then
+		MpDone.pilot = true
+		local ok = ui.PilotSelect.createPilot("MpProbe", true)
+		MpLog("createPilot(MpProbe, multi=true) -> " .. tostring(ok))
+		ui.PilotSelect.selectPilot("MpProbe", true)
+	end
+	if name == "GS_STATE_MULTI_START_GAME" and not MpDone.accept then
+		-- The "start game" screen (game name, password, rank limits) waits for the host's Accept,
+		-- which posts GS_EVENT_MULTI_HOST_SETUP (multiui.cpp:2437). Section 21.2: a client that
+		-- became host on a standalone sat here for two minutes until this was added.
+		MpDone.accept = true
+		local ok = ba.postGameEvent(ba.GameEvents["GS_EVENT_MULTI_HOST_SETUP"])
+		MpLog("post GS_EVENT_MULTI_HOST_SETUP -> " .. tostring(ok))
+	end
+	if name == "GS_STATE_MAIN_MENU" and not MpDone.join then
+		MpDone.join = true
+		local ok = ba.postGameEvent(ba.GameEvents["GS_EVENT_MULTI_JOIN_GAME"])
+		MpLog("post GS_EVENT_MULTI_JOIN_GAME -> " .. tostring(ok))
+	end
+]
+$On Dialog Frame: [
+	local txt = "?"
+	if hv.Text then txt = tostring(hv.Text) end
+	local title = "?"
+	if hv.Title then title = tostring(hv.Title) end
+	local nch = -1
+	if hv.Choices then nch = #hv.Choices end
+	if not MpDone["dlg" .. txt] then
+		MpDone["dlg" .. txt] = true
+		MpLog("popup title=" .. title .. " text=" .. string.sub(txt, 1, 200) .. " nchoices=" .. nch .. " state=" .. ba.getCurrentGameState().Name)
+	end
+	-- The join screen's progress popup has one button, Cancel (multiui.cpp:1000): pressing it
+	-- abandons the join (section 21.1), so that one popup is left alone.
+	if txt == "Joining netgame" then return end
+	hv.Submit(0)
+	MpSubmitted = true
+]
++Override: [
+	local o = MpSubmitted == true
+	MpSubmitted = false
+	return o
+]
+#End

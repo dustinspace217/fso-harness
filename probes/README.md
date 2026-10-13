@@ -16,3 +16,5 @@ the answer. They are kept because they document behaviour the bridge depends on;
   e.g. `-noninteractive`).
 
 Run engine probes under `bounded-run`.
+- `mp_probe_mod/` — multiplayer pilot + join-screen entry probe (probe-results section 21.1).
+- `mp_match_probe.sh [mission]` — standalone + client inside one private network; the facts behind the match module (section 21.2-21.3).

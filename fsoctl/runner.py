@@ -258,11 +258,15 @@ def main(sid: str) -> int:
     xvfb = None
     try:
         sess = session.update(sid, lambda s: setattr(s, "runner_pid", os.getpid()))
-        try:
-            display, xvfb = _start_xvfb(sess.width, sess.height)
-        except (OSError, RuntimeError) as e:
-            return _fail(sid, f"xvfb: {e}")
-        xvfb_pid = xvfb.pid
+        display = None
+        if sess.role != "standalone":
+            # A standalone server has no window (stand_gui-unix.cpp); it gets no display at all,
+            # so a stray SDL init cannot open one anywhere.
+            try:
+                display, xvfb = _start_xvfb(sess.width, sess.height)
+            except (OSError, RuntimeError) as e:
+                return _fail(sid, f"xvfb: {e}")
+        xvfb_pid = xvfb.pid if xvfb else None
 
         def mark_display(s: session.Session) -> None:
             s.display, s.xvfb_pid = display, xvfb_pid

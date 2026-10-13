@@ -49,6 +49,13 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
 - **Commands are claimed by rename** (bridge) and withdrawn by rename (Python), so a timeout can say
   for certain whether the command ran.
 - **Exit codes 8 (bridge Lua error) and 9 (work failed)**; a finding is not a failure (exit 0).
+- **Multiplayer runs inside a match**: an unprivileged user+network namespace per game
+  (`unshare --map-root-user --net` holder process in its own scope; sessions join through
+  `nsenter`). Nothing is ever bound on the real network; never add a port forward or firewall
+  rule to "help". Every engine process binds its own UDP port (7808, 7809, ...); `-almission`
+  belongs to the host player, never the standalone; the bridge posts the join, start-game and
+  sync-launch events for clients (spec `2026-10-12-fso-harness-multiplayer-design.md`,
+  probe-results section 21).
 
 ## Build, test, lint
 - `pytest` (unit) · `bounded-run pytest -m engine -p no:xdist` · `-m qtfred` · `-m vulkan`

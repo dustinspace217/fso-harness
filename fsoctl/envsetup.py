@@ -32,7 +32,7 @@ _DESKTOP_SESSION_VARS = ("WAYLAND_DISPLAY", "SESSION_MANAGER", "XAUTHORITY",
                          "XDG_SESSION_DESKTOP")
 
 
-def child_env(base: dict, display: str, prefs: Path, renderer: str, run: Path) -> dict:
+def child_env(base: dict, display: str | None, prefs: Path, renderer: str, run: Path) -> dict:
     """Return a copy of `base` set up for a headless FSO/qtFRED child process.
 
     Receives: base (the caller's environment; not modified), display (":N" from Xvfb), prefs (the
@@ -60,6 +60,10 @@ def child_env(base: dict, display: str, prefs: Path, renderer: str, run: Path) -
         "XDG_RUNTIME_DIR": str(run / "xdg-runtime"),
         "DBUS_SESSION_BUS_ADDRESS": f"unix:path={run / 'no-bus'}",
     })
+    if display is None:
+        # A standalone multiplayer server: no window, so no display of any kind (the caller's
+        # DISPLAY would otherwise leak through to the engine).
+        env.pop("DISPLAY", None)
     if renderer == "opengl":
         env["LIBGL_ALWAYS_SOFTWARE"] = "1"
     else:

@@ -230,13 +230,22 @@ function M.install()
 		end })
 
 	W.created, W.selected = {}, {}
+	W.created_multi, W.selected_multi = {}, {}
 	ui = {
 		PilotSelect = {
-			createPilot = function(name) W.created[#W.created + 1] = name return true end,
-			selectPilot = function(name) W.selected[#W.selected + 1] = name end,
+			createPilot = function(name, multi)
+				W.created[#W.created + 1] = name
+				W.created_multi[#W.created_multi + 1] = multi == true
+				return true
+			end,
+			selectPilot = function(name, multi)
+				W.selected[#W.selected + 1] = name
+				W.selected_multi[#W.selected_multi + 1] = multi == true
+			end,
 			WarningCount = 0, ErrorCount = 0,
 		},
 		Briefing = { commitToMission = function() W.committed = true return COMMIT_SUCCESS end },
+		MultiSync = { startCountdown = function() W.countdowns = (W.countdowns or 0) + 1 end },
 	}
 
 	-- The engine's error() is fatal; record it and stop the frame like the engine would.

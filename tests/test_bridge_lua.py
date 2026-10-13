@@ -31,13 +31,17 @@ def _names() -> list[str]:
 # The Lua tier had 43 tests when this floor was set. WHY a floor: a runner that lists nothing
 # (a syntax error in run.lua, a broken --list) would otherwise turn the whole tier into zero
 # parametrized cases, which pytest reports as a skip, not a failure (QA finding TA2-9).
-MIN_LUA_TESTS = 40
+MIN_LUA_TESTS = 70
 
 
 @pytest.mark.skipif(not LUAJIT, reason="luajit is not installed")
 def test_lua_tier_lists_its_tests():
     names = _names()
     assert len(names) >= MIN_LUA_TESTS, f"only {len(names)} Lua tests listed"
+    # Every test( ... ) in run.lua must be listed: five tests appended BELOW the runner block
+    # (whose --list branch calls os.exit) were defined after the listing and never ran (QA TA-1).
+    defined = RUNNER.read_text().count('\ntest("')
+    assert len(names) == defined, f"{defined} tests defined in run.lua, {len(names)} listed"
 
 
 @pytest.mark.skipif(not LUAJIT, reason="luajit is not installed")
