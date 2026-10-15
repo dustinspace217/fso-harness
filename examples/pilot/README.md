@@ -215,9 +215,18 @@ per-frame tally of the weapons that hit each container.
 | recorded | `aimed_bonus` 4000, `guard_weakest`, `spare` (disable) | **all three**, Vasudan Alliance Medal (Gamma at 1% hull) | 1 of 5 attempts; a batch with the "ignore" order instead lost the spare within 18 s in 5/5 |
 
 Honest limits: all three out in 2 of the 10 runs with the spare tactic as recorded (round 6 and
-the recorded batch). The tactic rests on the
-mission's cue chain (read from the .fs2), a veteran's knowledge. Why "disable" keeps the Rama
-alive is not understood: the ship never reads as disabled and the order is re-sent every 3 s.
+the recorded batch). The tactic rests on the mission's cue chain (read from the .fs2), a
+veteran's knowledge.
+
+Why "disable" keeps the Rama alive (probe of 4 runs, 2026-10-15, flag read with
+`ship:getFlag("protect-ship")`): the disable goal sets the target's Protected flag (fighters are
+"protected on cripple" in objecttypes.tbl; aigoals.cpp, AI_GOAL_DISABLE_SHIP), and AI ships hold
+their guns on a Protected ship once its hull is below the targeted subsystem's hit points + 50
+(aicode.cpp, "enemy is protected ... hull is low"). The Scorpion's engine is 35% of 180 = 63 hit
+points, so the wing stopped near 113 hp; with bolts already in flight it settled at 50% hull and
+stayed there for 90+ s with 8 friendlies targeting it, never disabled. The comm "Ignore my
+target" is AI_GOAL_IGNORE_NEW (hudsquadmsg.cpp), which sets no Protected flag: in both probe
+runs 3-7 friendlies kept shooting and it died in 4-25 s. A ship spared at 1% hull still died.
 The recorded run also exposed two jump-out bugs, fixed: Alt-J pressed again while the drive
 engages cancels the jump (now one press, then 15 s), and the afterburner held the speed above
 the warp speed the engine waits for (PCM_WARPOUT_STAGE1, within 5%; playercontrol.cpp).

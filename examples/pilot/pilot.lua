@@ -1236,9 +1236,11 @@ local function fly()
 		local seen = 0
 		for _ in pairs(A1.spare_seen) do seen = seen + 1 end
 		if not A1.spare_sig and alive == 1 and seen >= (sp.count or 1) then
-			-- Measured in The Hammer and the Anvil: with "Disable" re-sent every 3 s the spared
-			-- Scorpion lived in 4 of 5 runs (it never read as Disabled, and why the order holds the
-			-- wing off is not understood); with "Ignore" it died within 18 s in 5 of 5.
+			-- Measured in The Hammer and the Anvil: "Disable" kept the spared Scorpion alive (4 of
+			-- 5 runs): the disable goal sets its Protected flag (aigoals.cpp AI_GOAL_DISABLE_SHIP)
+			-- and the AI holds fire on a Protected ship whose hull is below the targeted
+			-- subsystem's hit points + 50 (aicode.cpp), so it sat at 50% hull, never disabled.
+			-- "Ignore" (AI_GOAL_IGNORE_NEW) sets no flag; it died within 25 s in 7 of 7.
 			A1.spare_sig, A1.spare_step = last:getSignature(), sp.disable and "disable" or "ignore"
 			note("sparing " .. last.Name .. " (last of " .. sp.wing .. ")")
 		end

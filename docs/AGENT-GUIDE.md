@@ -151,8 +151,10 @@ runs the same scenario on two builds side by side (write the steps as a scenario
          charge is an attacker (turncoat wings switch to Neutral, not Hostile).
        - Read the mission's arrival cues: a wave cued on another wave's destruction can be held
          back by keeping one ship of the earlier wave alive. Comm order "Disable My Target"
-         (`DISABLE_MESSAGE`, then "All Fighters") kept it alive in 4 of 5 runs; "Ignore My
-         Target" lost it within 18 s in 5 of 5.
+         (`DISABLE_MESSAGE`, then "All Fighters") does it: the disable goal marks the target
+         Protected and the AI stops firing once its hull is below the targeted subsystem's hit
+         points + 50 (`ship:getFlag("protect-ship")` reads the flag). "Ignore My Target" sets no
+         Protected flag (AI_GOAL_IGNORE_NEW) and the target died within 25 s in 7 of 7 runs.
      - **Strike:** gun down the target's `weapons` subsystem before bombing (set
        `ship.TargetSubsystem`, like the target-subsystem key): with it destroyed, turrets stop
        firing at bombs (aiturret.cpp:803-805). Release bombs inside ~1 km. With both, 3/3
