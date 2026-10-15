@@ -102,7 +102,8 @@ H.write_atomic = write_atomic
 -- Name of the current game state, e.g. "GS_STATE_MAIN_MENU".
 function H.state_name()
 	local st = ba.getCurrentGameState()
-	if st and st:isValid() then return st.Name end
+	-- gamestate has no Lua isValid() before #7761 (26.0.1 and older); Name is "" for an invalid handle.
+	if st and st.Name ~= "" then return st.Name end
 	return "none"
 end
 

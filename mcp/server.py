@@ -147,6 +147,7 @@ PROMPTS = {
     "compare_builds": "Compare a branch with master",
     "read_crash": "Read a crash",
     "reproduce_multiplayer_bug": "Reproduce a multiplayer bug",
+    "fly_mission": "Fly a mission",
 }
 
 
@@ -246,6 +247,14 @@ def list_sessions() -> str:
 
 
 @mcp.tool()
+def guide(section: str | None = None) -> str:
+    """Read the agent guide: omit `section` to list its sections, or name one (a unique part of
+    the heading is enough, e.g. "fly" for "Fly a mission"). The recipes and engine facts that do
+    not fit in the server instructions live here; read the matching section before a task."""
+    return _ctl("guide", *(_pos(section) if section else []), timeout=30)
+
+
+@mcp.tool()
 def version() -> str:
     """The harness version this server runs (compare with bridge_info's version from status)."""
     return _ctl("version", timeout=30)
@@ -342,7 +351,8 @@ def sexp(id: str, expr: str, mode: str = "eval") -> str:
 
 @mcp.tool()
 def lua(id: str, code: str) -> str:
-    """Run free-form Lua in the engine (session launched with allow_eval; audited)."""
+    """Run free-form Lua in the engine (session launched with allow_eval; audited). Flying the
+    player from Lua: read guide("fly") first; a tested pilot is in examples/pilot/."""
     return _ctl("lua", *_pos(id, code))
 
 
@@ -368,7 +378,9 @@ def pilot(id: str, pitch: float = 0.0, heading: float = 0.0, bank: float = 0.0,
     `collision.direction` gives where it is in the ship's axes (right/up/forward, unit length):
     steer the other way, reversing if it is ahead, and fly off. Contact that began before the
     flight does not stop it, so the escape flight works; `touching` says whether you are still
-    in contact. stop_on_collision=false keeps flying (`collisions` still counts contacts)."""
+    in contact. stop_on_collision=false keeps flying (`collisions` still counts contacts).
+    For aiming and dogfighting (a new stick value every frame), use a Lua controller instead:
+    guide("fly")."""
     return _ctl("pilot", f"--pitch={pitch}", f"--heading={heading}", f"--bank={bank}",
                 f"--forward={forward}", *_opt("primary", primary), *_opt("secondary", secondary),
                 *_opt("cm", cm), f"--seconds={seconds}",

@@ -27,6 +27,16 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
   checked in tests/mcp_check.py) and AGENT-GUIDE recipes (the server's prompts). The probe-results
   doc is the evidence, not the delivery: 2026-10-12's demo hit `rotateVector` and 1-based
   `getGameDifficulty`, both already recorded in section 18 that the agent never read.
+- **The `lua` pre-check (fsoctl/lua_check.py) is the only guard against fatal API names**, and it
+  only sees text: library functions, `control_info` colon calls, and capitalised `.Field` /
+  `:method(` names that no API class or library has (names the code defines itself are exempt).
+  Its API cache is keyed by binary AND mod list (mods add Lua). Known holes, pinned in
+  tests/test_lua_check.py: a real name on the wrong handle type (`Linked` read on a `weaponbank`
+  aborted a session) and the string-call form `me:f"x"`. Never widen an exemption without a red
+  test.
+- **The guide is delivered by a `guide` verb/tool**, because the INSTRUCTIONS budget is full and
+  prompts cover only some sections. A new agent-facing lesson goes into a docs/AGENT-GUIDE.md
+  section (reachable via `guide`), not into the instructions.
 - **qtFRED** only ever opens a copy of a mission; its editor is the window titled with the mission
   file name (found by pid; the first window is a splash); needs `-noninteractive`.
 - **Pointer input is window-relative** (`mousemove --window`): windows are not at 0,0.
@@ -68,6 +78,17 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
 - `ruff check .` clean; `shellcheck probes/*.sh mcp/*.sh` clean.
 - Lua: `luajit -bl fsoctl/bridge/fso_harness_bridge/data/scripts/fsoharness.lua > /dev/null` for a
   syntax check (the engine itself is the real test).
+
+## examples/pilot (a consumer of the harness, not part of the package)
+- One change per iteration, each from what the last run's log showed; a fresh session per run
+  (a mission restart keeps Lua state). Mission-specific setup (target lists, waiting points)
+  stays in a setup file outside the repo; pilot.lua carries only general behaviour, with a
+  comment naming the run that motivated each rule.
+- Behaviour shared by every mode (the idle hold, the ram check, ETS) changes every drill: re-run
+  the drills before calling a change safe. Results in its README carry sample sizes; two runs is
+  not a rate.
+- Parallel sessions: each Vulkan session costs ~1 core, ~0.55 GB RAM, ~0.5 GB VRAM; the software
+  renderer ~8 cores. `FSO_HARNESS_MAX_SESSIONS` caps them (default 3).
 
 ## Etiquette
 - Engine tests always via `bounded-run`; sessions never touch the user's desktop (Xvfb only).

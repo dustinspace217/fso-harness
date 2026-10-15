@@ -80,11 +80,16 @@ runs the same scenario on two builds side by side (write the steps as a scenario
 5. Lessons from flying SM1-01 this way (probe-results section 19 has the sources):
    - **pcall does not save you from API mistakes.** A missing name or a wrong argument type
      throws a C++ exception that ends the engine even inside `pcall`. The `lua` tool refuses the
-     two shapes it can see in the text (an unknown library function such as `ba.getControlMode`,
-     and a colon call on the no-self `control_info` functions), including in files loaded with
-     `loadfile("/abs/path")`, whenever `api_docs` is cached for the build (the reply's `lua_check`
-     says `passed` or `skipped: <why>`). It cannot see handle types, so check handle methods in
-     `api_docs` `scripting.lua`. Compare handles with `getSignature()`, never `.Name`:
+     shapes it can see in the text: an unknown library function such as `ba.getControlMode`, a
+     colon call on the no-self `control_info` functions, and a capitalised field or a method that
+     no class or library in the build's API has (`Stats.MissionPrimaryFriendlyHits`, real name
+     `...FriendlyHit`), including in files loaded with `loadfile("/abs/path")`, whenever
+     `api_docs` is cached for the build AND its mod list (the reply's `lua_check` says `passed` or
+     `skipped: <why>`; run `api_docs` with the session's `mods` if it says skipped). It cannot see
+     handle types: a real name on the wrong handle still passes (`Linked` is a field of the bank
+     LIST, `weaponbanktype`; read on one `weaponbank` it ended the session), so check which
+     `@class` a name belongs to in `api_docs` `scripting.lua` before using it. Keep reads you repeat in a
+     checked file and `loadfile` it. Compare handles with `getSignature()`, never `.Name`:
      a ship's `Target` or a weapon's `HomingObject` can be a missile, and reading `.Name` on a
      weapon is fatal. Read ship-only fields after `getBreedName() == "Ship"`. Call
      `control_info` functions with a dot (`ci.useButtonControl(-1, "SHIELD_EQUALIZE")`); a colon
@@ -96,18 +101,88 @@ runs the same scenario on two builds side by side (write the steps as a scenario
      start of each frame, or a press repeats. Held controls (trigger, afterburner) do not go through
      this path, and under LUA_FULL the control_info trigger counts are ignored: fire with
      `firePrimary()`.
-   - **Steering:** world to ship-local is `orientation:rotateVector` (unrotate is the reverse); dot
-     products with `getRvec/getUvec/getFvec` cannot be mixed up. The stick sets turn rate = stick x
-     max rate, which the ship reaches with a lag, so pure proportional steering overshoots and
-     wiggles. `Physics.RotationalVelocity` (ship-local, same signs as the stick) is the damping
-     input. Bank to turn works with bank = -phi, where phi = atan2(x, y) of the target in ship
-     coordinates: one flight held phi near 0 degrees. A re-decided-every-frame avoid manoeuvre
-     yo-yos, so commit to it. Measured honestly: one flight with damping (KD 0.6), bank-to-turn
-     and committed avoids hit 27% of primaries against 35% for plain proportional steering. Not a
-     proven improvement; tune and compare over several runs before relying on it.
-   - **Frame rate:** the software renderer runs about 20-28 fps, and a controller acts once per
-     frame. Time compression divides its control rate by the same factor, so keep compression at
-     100 while it flies.
+   - **Start from `examples/pilot/`** (pilot.lua, a drill, and what was measured with it, with
+     sample sizes) rather than writing a controller from scratch. Its rules (sources in
+     probe-results section 22; the README says which were measured and which come from source):
+     - **Lead with the target's absolute velocity.** Lasers do not inherit your velocity (retail
+       ai_profiles default). Subtracting your own velocity, the obvious-looking solve, aims
+       ~30 m off at 500 m (the old controller: 0 hits in 30 shots on the drill).
+     - **Aim from the gun mount.** FS2 guns do not converge; point the nose at the intercept minus
+       the mount offset. Learn it from your own bolts, back-projected to the moment of firing and
+       sampled only while you are hardly turning or sliding (otherwise it is biased ~1 m).
+     - **Add the target's acceleration** to the lead (p + v t + a t^2/2, a from its velocity
+       history). On the weaving drone this took hits from 26% to 65% (one run each).
+     - **Steer for the turn-rate lag.** Turn rate = stick x max rate, reached with time constant
+       `$Rotdamp` (0.35 s on a Myrmidon). Command rate = own rate + Kp x error + (1 + Kd) x
+       d(error)/dt; own rate + d(error)/dt is the line-of-sight rate, so a crossing target is
+       tracked without a steady lag. Smooth d(error)/dt with a time constant, not a per-frame
+       weight. Cancel yaw-induced roll with bank = heading x max yaw x `BankingConstant` / max roll.
+     - **Throttle for turn radius.** Turn rate does not depend on speed, so slower turns tighter:
+       a third throttle when the target is >60 degrees off the nose; on its tail, hold its speed
+       plus a little to close to ~250 m.
+     - **Heat seekers (Rockeye) need no lock;** Lua cannot see lock or homing type. Fire one at a
+       time per target: at bombers and slower-turning ships within 20 degrees; at fighters that
+       turn as fast as you only from astern. Countermeasures are checked against missiles only in
+       the 2 frames after launch and only within 300 m, so drop them when the missile is close.
+     - Bank to turn beyond ~45 degrees (bank = -phi, phi = atan2(x, y) in ship coordinates), and
+       commit to an avoid manoeuvre instead of re-deciding it every frame (it yo-yos).
+     - **A mission restart keeps your Lua state but sends the clock back toward 0** (and object
+       signatures restart): reset every stored timestamp when `mn.getMissionTime()` goes backwards.
+     World to ship-local: project onto `getRvec/getUvec/getFvec` (cannot be mixed up).
+     `Physics.RotationalVelocity` is ship-local with the stick's signs.
+     - **Link the gun banks** (Cycle Primary Weapon Forward, ".", steps bank 1 -> bank 2 ->
+       linked). Ships default to bank 1 alone. `ship.PrimaryBanks.Linked` reads it: `Linked`
+       belongs to the bank LIST (`weaponbanktype`), and reading it on one `weaponbank` aborts
+       the engine.
+   - **Mission types** (examples/pilot README has the settings; measured at Medium, 2026-10-15):
+     - **Escort:** order the wing first. Target the escorted ship, press Protect My Target
+       (`PROTECT_MESSAGE`), then pick "All Fighters" from `mn.CommItems` (`:selectItem()`, the
+       menu a player answers with a number key). Keep the escorted ship targeted until the order
+       is SENT, a frame after the pick: the order uses the player's target at that moment
+       (hudsquadmsg.cpp:1305), and "protect" on a hostile sends nothing. Check it landed:
+       `wingman.Orders[1]:getType()` reads ORDER_GUARD. Then: bombs homing on the escort first,
+       then whoever is shooting it (the stock guard AI's rule), then bombers. Solo, one fighter
+       lost the freighter in all 14 runs; with an ordered wing it survived 15 of 17.
+     - **Strike:** gun down the target's `weapons` subsystem before bombing (set
+       `ship.TargetSubsystem`, like the target-subsystem key): with it destroyed, turrets stop
+       firing at bombs (aiturret.cpp:803-805). Release bombs inside ~1 km. With both, 3/3
+       cruisers destroyed with little damage taken; releasing at 900 m without disarming, 1/2
+       (and the pilot down to 12% hull in the other); from 2 km, every bomb died to turrets.
+     - **Scan / stealth:** a scan needs the HUD distance (to the target's bounding box,
+       `hu.getTargetDistance`) under max(150, radius + 100) x the scanner's range multiplier,
+       the nose within dot 0.95 of the centre, held for the scan time (playercontrol.cpp:1768).
+       Arrive slowly (closing speed tied to distance left), scan the nearest unscanned ship
+       first (transports leave), and keep clear of patrols: 3/3 drills scanned everything
+       undetected, 0/3 without avoidance. Stealth means never firing: some missions read the
+       fire keys. From FSPort "Playing Judas" (all goals on Medium after 13 runs):
+       - A ship that warps in does not wait at its arrival point: the Eva destroyer crossed the
+         area at up to ~300 m/s and parked near its exit for ~20 s. Wait where it parks, not
+         where it arrives.
+       - Check the ROUTE to a waiting point against patrol tracks, not only the point. A patrol
+         fighter faster than you (88 vs 75 m/s) cannot be outrun once it heads your way.
+       - Give the controller something to do when there is nothing to do: a default cruise
+         drifted into a sentry's detection range while waiting for the next ship.
+       - Read the mission's own debriefing tips (`#Debriefing_info`, the `$Recommendation text`
+         lines, in the .fs2) before planning: they are the designers' hints.
+   - **Diagnose a failed run before changing the pilot.** Each fix that worked in Playing Judas
+     came from one observation, not from a guess:
+     - When did an event fire? `( is-event-true-delay !Name! N )` is true once the event has been
+       true for N seconds: bisect N to find the moment (the detection was 381 s, when one patrol
+       fighter crossed 586 m).
+     - Where was everything? A second `On Frame` hook that appends one row a second (positions of
+       the player and the ships that matter) to a global table, read back with `lua`. FSO's `io`
+       library is its own (no `io.open`); return the rows as text.
+     - Which rule steered? Log the controls actually sent after every override, plus the angle
+       between the nose and the target. A rule you did not suspect (a 0.66-throttle default, an
+       avoidance push) shows up there.
+     - Load your setup from a file with `loadfile` so every run starts identical, and run each
+       iteration as a fresh session: a mission restart keeps Lua state you may have forgotten.
+     - **`checkRayCollision(from, to)` casts THROUGH `to` to infinity** (MC_CHECK_RAY,
+       model.h:1370). Check the hit's distance yourself or a ship far along the nose line reads
+       as "about to hit".
+   - **Frame rate:** the software renderer runs about 20-35 fps (it varies with machine load;
+     record it per run), and a controller acts once per frame. Time compression divides its
+     control rate by the same factor, so keep compression at 100 while it flies.
    - **Missile lock is not exposed to Lua.** After firing, check that your missile's `HomingObject`
      is set. **Hull distance:** `ship:checkRayCollision(from, to)` returns the hit point; a capital
      ship's `Radius` is a bounding sphere and useless for range.

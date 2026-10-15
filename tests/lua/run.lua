@@ -1248,6 +1248,22 @@ test("dismiss_popups_leaves_any_joining_popup_alone", function(W)
 	eq(#W.submits, 0, "left alone")
 end)
 
+test("state_name_works_on_builds_whose_gamestate_has_no_isValid", function(W)
+	-- 26.0.1 and older: gamestate gained a Lua isValid() only in #7761, and an unknown index is an
+	-- engine error that pcall does not catch (seen killing a 26.0.1 session at startup).
+	local H = boot(W)
+	local function gamestate(name)
+		return setmetatable({ Name = name }, { __index = function(_, k)
+			W.fatal = W.fatal or ("read missing field " .. tostring(k) .. " on gamestate")
+			error("Could not find index '" .. tostring(k) .. "' in type 'gamestate'")
+		end })
+	end
+	ba.getCurrentGameState = function() return gamestate("GS_STATE_MAIN_MENU") end
+	eq(H.state_name(), "GS_STATE_MAIN_MENU", "valid handle")
+	ba.getCurrentGameState = function() return gamestate("") end
+	eq(H.state_name(), "none", "invalid handle")
+end)
+
 
 -- ---- runner -----------------------------------------------------------------------------------
 

@@ -355,3 +355,93 @@ def test_report_at_exactly_the_cap_has_no_count_line(tmp_path):
     code = " ".join(f"ba.nope{i}()" for i in range(lua_check._REPORT_MAX))
     found, _ = lua_check.check(code, _api_file(tmp_path))
     assert len(found) == lua_check._REPORT_MAX and "more" not in found[-1]  # MU check_47
+
+
+# ---- check 3: member names that exist nowhere ------------------------------------------------
+
+API_M = {"version": 2, "elements": [
+    {"type": "library", "name": "Base", "shortName": "ba", "children": [{"name": "print"}]},
+    {"type": "class", "name": "ship", "children": [
+        {"name": "Name"}, {"name": "HitpointsLeft"}, {"name": "getSignature"}, {"name": "isValid"},
+        {"name": "Stats"}, {"name": "PrimaryBanks"}]},
+    {"type": "class", "name": "player_stats", "children": [{"name": "MissionPrimaryFriendlyHit"}]},
+    {"type": "class", "name": "weaponbanktype", "children": [{"name": "Linked"}]},
+]}
+
+
+def _m(code):
+    """member_problems for one text, with that text's own keys and table roots."""
+    bare = lua_check.strip_comments_and_strings(code)
+    return lua_check.member_problems(bare, lua_check.api_names(API_M),
+                                     lua_check.declared_keys([bare]),
+                                     lua_check.table_roots([bare]))
+
+
+@pytest.mark.parametrize("code, word", [
+    ("local h = me.Stats.MissionPrimaryFriendlyHits", ".MissionPrimaryFriendlyHits"),  # crash 1
+    ("if me:isWarpingOut() then end", ":isWarpingOut()"),       # the 2026-10-15 Lua error
+    ("x = f(me).Bogus", ".Bogus"),                               # after a call
+    ("x = t[1].Bogus", ".Bogus"),                                # after an index
+    ("me:bogus{}", ":bogus()"),                                  # table call form
+])
+def test_member_that_exists_nowhere_is_refused(code, word):
+    found = _m(code)
+    assert len(found) == 1 and found[0].startswith(word), found
+
+
+@pytest.mark.parametrize("code", [
+    "local a = me.HitpointsLeft .. me.Name .. tostring(me:getSignature())",   # real members
+    "if hv.Beam ~= nil or hv.Weapon then end",                  # hook variables are dynamic
+    "A1 = A1 or {}; A1.cfg = A1.cfg or {}; local k = A1.cfg.Kp or 17",       # code's own table
+    "local t = {}; local v = t.Anything",                       # local table
+    "cfg.KD = 0.3; local k = other.KD",                         # key the code defines
+    "local c = { Bar = 2 }; local v = x.Bar",                   # table-constructor key
+    "local s = name:lower():sub(1, 3)",                         # Lua string methods
+    "local s = \"a\" .. Name",                                  # concatenation, not a field
+    "-- me.Bogus and me:bogus() in a comment",                  # comment
+    "local s = 'me.Bogus'",                                     # string
+    "function obj:helper() end; obj:helper()",                  # method the code defines
+    "local n = 1.5 + me.HitpointsLeft",                         # numbers
+])
+def test_member_check_passes_good_code(code):
+    assert _m(code) == []
+
+
+def test_member_check_cannot_see_the_handle_type():
+    # The documented limit: Linked exists (on weaponbanktype), so reading it on one weaponbank,
+    # which aborted the engine on 2026-10-15, still passes. Pinned so the docs stay honest.
+    assert _m("local l = me.PrimaryBanks[1].Linked") == []
+
+
+def test_check_runs_the_member_check_on_code_and_loaded_files(tmp_path):
+    api = tmp_path / "scripting.json"
+    api.write_text(json.dumps(API_M))
+    lib = _write(tmp_path / "lib.lua", "return me.Bogus")
+    found, _ = lua_check.check(f'local f = loadfile("{lib}"); return me:nope()', api)
+    assert sorted(p.split(":")[0] if p.startswith("/") else p[:6] for p in found) == sorted(
+        [str(lib), ":nope("])
+
+
+def test_no_self_function_colon_call_is_reported_once(tmp_path):
+    # Check 2 owns the colon misuse of useButtonControl; check 3 must not add a second message
+    # even when the API listing in use lacks the name.
+    found, _ = lua_check.check('ci:useButtonControl(-1, "X")', _api_file(tmp_path))
+    assert len(found) == 1 and "takes no self" in found[0]
+
+
+def test_string_call_form_is_a_known_gap():
+    # Limit: string literals are blanked before matching, so me:bogus"x" is not seen.
+    assert _m('me:bogus"x"') == []
+
+
+def test_every_link_of_a_chain_is_checked():
+    # The first version consumed the owner name, so the link after a checked one was skipped.
+    assert len(_m("x = me.Stats.Bogus")) == 1
+    assert len(_m("x = me . Stats . Bogus")) == 1
+
+
+def test_chain_root_stops_at_a_keyword():
+    # `if hv.Weapon` must give the root hv (dynamic), not if.
+    assert _m("if hv.Weapon ~= nil then end") == []
+    assert lua_check._chain_root("if hv.Weapon", len("if hv")) == "hv"
+    assert lua_check._chain_root("a.b . c.D", len("a.b . c")) == "a"

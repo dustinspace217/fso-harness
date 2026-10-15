@@ -22,6 +22,7 @@ fi
 envargs=(-e "FS2PATH=${FS2PATH}" -e "FSO_BIN=${FSO_BIN}")
 [ -n "${FSO_BIN_DEBUG:-}" ] && envargs+=(-e "FSO_BIN_DEBUG=${FSO_BIN_DEBUG}")
 [ -n "${QTFRED_BIN:-}" ] && envargs+=(-e "QTFRED_BIN=${QTFRED_BIN}")
+[ -n "${FSO_HARNESS_MAX_SESSIONS:-}" ] && envargs+=(-e "FSO_HARNESS_MAX_SESSIONS=${FSO_HARNESS_MAX_SESSIONS}")
 
 # Replace an existing registration so a re-run with new paths does not fail on "already exists".
 claude mcp remove --scope user fso-harness >/dev/null 2>&1 || true

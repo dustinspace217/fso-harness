@@ -1,13 +1,12 @@
 # FSO Harness Implementation Plan
 
-## Status (updated 2026-10-12 evening, telemetry + collision alerts)
-Phase: post-v1 maintenance (v1 Tasks 1-23 done and published)
-Done: v1; demo-findings fix wave + QA; Lua playtest guidance (de45e8c); `lua` pre-send check
-(ROUTINE QA, 70/70); switchable telemetry + collision alerts (HIGH-RISK QA + cross-family closed,
-manifest 58/58); published 2026-10-12 as public 43439b2 (local ce44727)
-Next: Dustin's call on the Proposal below (throttle after a collision stop); then the
-agreed input work (named-action input, relative mouse, keyboard/F-key; joystick OUT)
-Blocked: nothing
+## Status (updated 2026-10-15 ~12:30)
+Phase: post-v1 maintenance; arc "mission-type skills" (section at the end) closed with Playing Judas
+Done: v1; scripted pilot v2 (69a52b9); mission-type skills (escort/strike/recon/stealth), lua field
+check, guide tool, Playing Judas all goals on Medium (iteration 13 + recorded rerun); committed
+with this update and published
+Next: FSPort convoy-escort mission (shield generators) to all goals on Medium+, then a recorded run
+Blocked: nothing (multi-agent QA of this arc not run: Dustin asked for docs, commit and push)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -3580,3 +3579,96 @@ Appendix: Deferments originated in this change
   session id was pinned now) | not introduced here; minimal-diff | fix: argv/keyword asserts in
   pilot tests, a log-kind wait test, timeout-message asserts | obsolete if wait_for/pilot are
   rewritten.
+
+## Post-v1: scripted pilot v2 and a pilot drill (2026-10-15)
+Request (Dustin, verbatim): "I want you to refine your piloting skills. Research what you can on
+the Freespace 2 flight model, the controls involved, any tutorials players have written about how
+to fly skillfully, and use it to refine how you control the player in the game." Not on the
+agreed task list; a direct new request, so it sits beside the open Proposal above, which is
+unchanged. Logged where agents read it (CLAUDE.md "Facts an agent needs while it plays"):
+`examples/pilot/` (pilot.lua, drill.lua, pilotdrill.fs2, sm1_status.lua, README with results),
+AGENT-GUIDE "Fly a mission", probe-results section 22, tests/test_examples.py.
+QA: HIGH-RISK (per-frame hooks with state across missions); the QA record, videos and run
+notes are kept outside the repository.
+
+Deviations (there was no written plan for this arc; these are against the request and v1):
+- scope-change: a drill (scripted drone + AI duels) was built first because v1's SM1-01 tuning
+  could not separate controller changes from mission randomness.
+- behavioral-change: v2 changes v1's lead (absolute target velocity, from the gun mount, with
+  acceleration), steering law, throttle, fire cone, missile and countermeasure rules.
+- other: escort performance (freighter hull) was not improved and may have regressed; reported in
+  the README rather than tuned (DEF-PL-02).
+
+Appendix: Deferments originated in this change
+| ID | Found by | Severity | What | Why deferred | Fix direction | Detection / revisit | Obsolete when |
+|---|---|---|---|---|---|---|---|
+| DEF-PL-01 | CR-10 | LOW | fly() is ~350 lines (inherited v1 shape) and scans mn.Weapons up to four times per frame | example script; the new heat-seeker logic was extracted; a full split is a rewrite of working v1 code | split fly() into target / attack / avoid / defend; one weapons pass per frame (gun learning before firing) | revisit at the next behaviour change to fly() | the pilot is rewritten |
+| DEF-PL-02 | head (SM1-01 runs) | MEDIUM | freighter protection not shown better under v2 (Iota 2: v1 61-72%, v2 22-68%, n=4) | escort is target priority, not gunnery; the drill does not measure it | an escort drill (bombers attacking a freighter), then tune threat scoring | Iota hull per SM1-01 run; revisit before using the pilot for escort tests | — |
+| DEF-PL-03 | head (verification) | LOW | the drill's "unseen death" path (restart before the dying frame was seen) never ran | self-destruct gave a seen death; an instant death needs a different setup | kill the player with a sexp that skips the death roll (destroy-instantly) and check the report line | revisit when the drill changes | — |
+| DEF-PL-04 | CR-3, TA (Phase B) | LOW | the learned gun offset (1.67 m up) was not compared with the model's gun points | needs a model read not done here | read the POF gun points (model_info or a Lua model read) and compare | revisit if aim analysis needs sub-metre accuracy | — |
+| DEF-PL-05 | TA-6, SL-6 | LOW | the drill does not restore subsystem damage between duels | no single field for it | repair every subsystem via sexp or per-subsystem HitpointsLeft | a duel row after a heavily damaged one | — |
+
+## Next arc: mission-type skills + guide delivery (agreed 2026-10-15 ~05:00)
+Dustin's asks, verbatim: "let's run some drills on high difficulty. Then, let's look into other
+mission types and incorporate some skillsets and learnings for those. E.g. escort missions,
+stealth missions, bombing missions." Rulings (AskUserQuestion 05:00): stealth = "You can also try
+the FSPort mission 'Playing Judas.' Avoiding detection is important there, so learn both skills"
+(recon scan-and-escape AND true stealth); strike = build it (code + drill); guide delivery =
+build the `guide` tool + `fly_mission` prompt.
+Scope audit (Architect, FLAG-TO-USER) raised the stealth/recon substitution and the strike lock;
+both resolved by those rulings (lock is checkable: No-Dumbfire bombs refuse to launch unlocked,
+ship.cpp:14265).
+Work list, in order: (1) guide tool + fly_mission prompt (harness Python, tests); (2) escort mode
++ escort drill (freighter + SB Nephilim / SF Mara waves; target priority bombs > bombers >
+fighters; shoot bombs down); (3) strike mode + drill (GTB Ursa + Cyclops vs turreted cruiser;
+disarm turrets, lock, release ~1 km, break, repeat); (4) stealth: recon mode (scan within range,
+nose on target, hold) and true-stealth mode (stay outside AI view cone/400 m x skill), drills, then
+FSPort "Playing Judas"; (5) QA. Insane drills: v2 1/8 kills, v1 0/8; jink defence under test.
+(6) Added 05:03, Dustin verbatim: "Are you only using the myrmidon or other ships too? You should
+learn how the different fighter/bomber specs affect how you fly and how to be successful in each."
+-> spec table of player-flyable fighters/bombers; drills per class (class swapped by sexp as test
+setup); per-class tactics where measured. Insane jink result: Mara 1/4 (no-jink 0/4), Dragon 0/4
+(no-jink 1/4): duels last 2-5x longer but far fewer shots fired; jink needs tuning, not shipped
+as proven.
+
+### Progress 2026-10-15 05:20-06:50 (deviations and findings)
+- Correction (Dustin 05:35): "Why are you boosting the hull instead of learning better escort
+  skills?" I had raised the drill freighter's hull and swapped Nephilim bombers for Nahemas to make
+  A/B runs measurable; both reverted. Ruling (06:09): "Making the mission easier to improve your
+  score invalidates the test. Making the mission easier to improve your tactics in different
+  scenarios is valid." Agreed Proposal: Nephilims back, 3 AI wingmen, the pilot orders them the
+  player's way. Also asked: watch the wingmen's guard tactics and learn from them.
+- Wing orders work through the real comm menu (mn.CommItems "All Fighters" after Protect My
+  Target); three bugs on the way (stale menu step; the order is built from the player's target
+  when SENT, a frame after the pick, hudsquadmsg.cpp:1305; verified by reading ORDER_GUARD back).
+- Engine fact: object:checkRayCollision casts THROUGH the end point to infinity (MC_CHECK_RAY,
+  model.h:1370). The pilot's ram check treated it as a segment, so any big ship on the nose line
+  within ~600 m triggered an avoid (recon: scan holds never formed). Fixed with hull_hit(); probe
+  fso-lua-checkraycollision-infinite.
+- Escort skill fixes: relative-velocity ram check (tail attacks on bombers broke off), Trebuchet
+  lock proxy to 3 km, bomb stand-off (flew into a bomb once), shooter-of-the-freighter priority
+  (from the stock guard AI, aicode.cpp guard_object_was_hit; raised to outrank bombers after solo
+  runs showed the escort fighter's lasers killing the freighter while the pilot chased bombers).
+- Results so far (Medium): solo, freighter lost every run (mostly ~45 s, escort fighter lasers);
+  with the ordered wing, survived 5 of 6 runs untouched, wingmen getting most bomber kills
+  (they sit 540-880 m off the freighter). Trebuchet vs Rockeye: no difference at n=2.
+- Strike deviation from this plan: item (3) says release ~1 km; the code released anywhere in
+  500-2000 m and fired at 2000 m every time, 0/20 bombs hit (turrets). Now A1.cfg.strike_release
+  (default 900), A/B against 2000 running.
+- Recon: scan works after the ray fix (first two containers in 31 s and 20 s, undetected).
+- Parallel drills (Dustin 06:31 "scale up... careful not to crash my computer"; 06:35 cap to 6):
+  Vulkan sessions cost ~1 core, ~0.55 GB RAM, ~0.5 GB VRAM each vs ~8 cores for the software
+  renderer; registration now carries FSO_HARNESS_MAX_SESSIONS=6 (mcp/register.sh passes it); held
+  at 5 sessions while the machine load average sat near 21.
+
+### Progress 2026-10-15 07:00-12:30 (Playing Judas, deviations and findings)
+- Dustin 09:34: "be able to play Playing Judas end-to-end with success result on medium or
+  higher"; review skipped during iteration ("we're okay just going by iteration"). Reached in
+  iteration 13 (all three goals, undetected); recorded rerun the same. Per-run table in
+  examples/pilot/README.md.
+- Deviations from the 06:50 plan: no multi-agent QA for this arc (Dustin's 12:03 instruction
+  listed docs, commit, push, next mission); the class-study A/B batches were not extended.
+- Behaviour change with reach beyond the mission: fly() gained an idle branch (hold position,
+  keep avoiding) where it used to cruise at 0.66 throttle. Escort/duel drills not re-run since.
+- New pilot options: scan_tiers/front_first, avoid_until/avoid_lapse, ambush (+hold_until),
+  go_to, jump_out, idle_at, trace; "close pass" logging.

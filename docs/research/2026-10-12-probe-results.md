@@ -409,3 +409,54 @@ posted events from START_GAME. One caveat: a state entered and left inside a pop
   host setup until the clients are in, then launch. Not in this slice (xfail test
   `test_client_joins_player_host`); the standalone-plus-clients topology does not have the
   problem because the first client IS the host and `-almission` goes to it.
+
+## 22. Flight model and gunnery for a Lua pilot (2026-10-15, drill sessions sbf668874, s69b61c5b)
+Source lines are from fs2open master at c90188190 (local clone); "measured" means flown on 26.1.0
+release, llvmpipe, retail FS2 data, Easy. Drill = `examples/pilot/` (a scripted drone and
+1-vs-1 duels in an empty mission).
+- **Lasers do not inherit the shooter's velocity.** Non-homing weapons start at their table speed
+  along the barrel (weapons.cpp:7401-7414); the parent's velocity is added only under the
+  ai_profiles flag `$use additive weapon velocity`, default NO (def_files/ai_profiles.tbl:243;
+  applied at weapons.cpp:7446). So a lead solve uses the target's ABSOLUTE velocity. The
+  2026-10-12 controller subtracted its own velocity (~30 m of aim error at 500 m) and hit 0/30 on
+  the track drill; v2 without its acceleration lead hit 105/396. That v2 also changed the
+  steering, gun-mount aim, throttle and fire cone, so the jump is not the velocity fix alone.
+- **Guns do not converge.** Bolts fly parallel to the nose from their mounts, so the nose must point
+  at (intercept - mount offset). A first learner (12 bolts, projected on the ship's right/up axes
+  as first seen, no back-projection, while turning) gave right 0.11 m, up 1.81 m for the Myrmidon
+  HL-7. QA (CR-3/SL-3) showed that method is biased ~1 m toward the turn; the learner now
+  back-projects each bolt to its firing moment and samples only while hardly turning or sliding.
+  The corrected value is in examples/pilot/README.md; it was not compared with the model's
+  gun points.
+- **Turning.** Desired turn rate = stick x max rate per axis, no speed term (physics.cpp:497-498);
+  the actual rate approaches it exponentially with time constant `$Rotdamp`
+  (physics.cpp:203-205, formula :108-124); Myrmidon: max rates 1.57 / 1.70 / 1.26 rad/s
+  (pitch/yaw/roll), rotdamp 0.35 s (read from `Physics` in Lua). Yaw adds roll:
+  desired roll += -heading x max yaw rate x `$Banking Constant` (default 0.5; physics.cpp:532,538).
+  Since turn rate does not depend on speed, turn RADIUS = speed / rate: slow down to turn tighter.
+- **Speed.** Forward velocity snaps to a ramped goal (no forward damping, physics.cpp:318-321);
+  sideways velocity decays with `$Damp`. Engine ETS scales top speed piecewise-linearly: 0.5x at
+  zero engine energy, `$Max Velocity` at the default, the overclocked max at full
+  (hudets.cpp:220-263). Lua can set `physics.AfterburnerActive`, which bypasses
+  `afterburners_start()`'s fuel/cooldown checks (physics_info.cpp:385-391; afterburner.cpp:84-132):
+  a pilot script that wants to stay honest must apply those gates itself.
+- **Missiles.** Retail Rockeye and Stiletto II are `+Type: HEAT` (weapons.tbl), needing no lock;
+  a heat seeker takes the shooter's current target as its homing object at launch
+  (weapons.cpp:7013-7019). Hornet, Tornado, Harpoon are ASPECT. Lua cannot read the homing type
+  or the HUD lock. Measured (one run each, hits/fired): inside 20 degrees at 200-1200 m, SF
+  Dragon duels 2/23 and SM1-01 5/5; tail-only, SM1-01 0/1; loose rule against slower ships,
+  SM1-01 7/48; that plus one-in-flight-per-target, SM1-01 5/28. No rule has been measured
+  enough to call it best.
+- **Countermeasures** are tested against missiles only in the 2 frames after a countermeasure's launch
+  (`Cmeasures_homing_check = 2`, weapons.cpp:7358-7360; decremented per frame, object.cpp:1584-1589)
+  and only within the countermeasure's effective radius, default 300 m (cmeasure/cmeasure.h:24;
+  weapons.cpp:5573, :10103). So a flare dropped while the missile is 450 m out is wasted, and how
+  well flares work depends on frame rate.
+- **Player hit statistics count hits on invulnerable ships** (scoring_eval_hit at shiphit.cpp:3091
+  runs before ship_do_damage's invulnerability return at :2526, called from :3106).
+- **A mission restart keeps Lua globals and frame hooks but sends the mission clock back toward
+  0**, and object signatures restart (object.cpp:460): stored timestamps then block actions until
+  the clock catches up (seen in the drill after a player death, 2026-10-15).
+- **The `lua` pre-send check does not see handle fields.** `ba.getCurrentPlayer().Stats.
+  MissionPrimaryFriendlyHits` (the real name is `MissionPrimaryFriendlyHit`) passed the check and
+  aborted the engine ("Could not find index ... in type 'scoring_stats'", session s69977995).

@@ -75,7 +75,9 @@ bash mcp/register.sh             # registers it with Claude Code at user scope (
   thing agents most easily miss: a mission is tested fastest by script (`sexp`, `lua`, `wait_for`),
   not by flying it.
 - The guide's recipes are MCP **prompts**, usable as commands: `/fso-harness:playtest_mission`,
-  `test_engine_change`, `check_mod`, `compare_builds`, `read_crash`.
+  `test_engine_change`, `check_mod`, `compare_builds`, `read_crash`, `fly_mission`.
+- Every other guide section is one call away: `guide` lists the sections, `guide fly` returns
+  "Fly a mission" (the instructions' 2,048-character budget is full).
 - `skills/fso-harness/SKILL.md` is the same guidance as an Agent Skill for tools that load skills
   from files (Claude Code: copy the folder to `~/.claude/skills/`; Codex and others read the same
   format).
@@ -112,9 +114,24 @@ reports them.
 | **Make** | `build` (cmake --build in a scope, parsed compiler errors), `scratch_mod create\|list\|remove`, `vp list\|extract` |
 | **qtFRED** | `fred_open` (opens a copy of the mission), `fred_save`, `fred_camera`, `fred_select`, `fred_selection`, `fred_check` (pre-save error check, read by OCR) |
 | **Analyse** | `validate`, `crash_report`, `api_docs` (this build's sexp + Lua reference), `model_info` (-pofspew), `frame_stats` (engine profiler), `compare` (two builds), `renderer_compare` (OpenGL vs Vulkan) |
+| **Read** | `guide` (a section of docs/AGENT-GUIDE.md, or the list of sections) |
 
 `fsoctl <verb> --help` lists every option. Scenario files for `compare` are JSON lists of steps,
 see `fsoctl/scenario.py`.
+
+`lua` checks the code before sending it whenever `api_docs` is cached for the build and its mod
+list: unknown library functions, colon calls on the no-self `control_info` functions, and any
+capitalised field or method that no class or library in the build's API has are refused (exit 7)
+instead of aborting the engine. It cannot see handle types; the reply's `lua_check` says whether
+the check ran.
+
+## Example: a scripted pilot
+
+`examples/pilot/` is a fighter pilot written in the engine's Lua, flying with player controls
+only, plus a drill that measures it. It has escort, strike, recon and stealth modes, and its
+README records what was measured with each and how often. With it an agent finished FSPort's
+"Playing Judas" (a stealth recon mission) on Medium with every goal met and without being
+detected. That took 13 iterations, each fixing one failure it observed (2026-10-15).
 
 ## Multiplayer
 

@@ -78,7 +78,7 @@ CASES = {
                    skip_movies=True, interactive=True, runtime=600, extra_args=["-window"],
                    network="real"),
     "status": dict(id=S), "stop": dict(id=S), "list_sessions": {}, "cleanup": {},
-    "version": {},
+    "version": {}, "guide": dict(section="-fly"),
     "screenshot": dict(id=S, crop="10x10+0+0", scale=0.5, full=True),
     "log": dict(id=S, grep="-ERR"), "state": dict(id=S, ships=False), "journal": dict(id=S),
     "crash_report": dict(id=S),

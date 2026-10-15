@@ -1,0 +1,143 @@
+#Mission Info
+
+$Version: 0.10
+$Name: Pilot Drill
+$Author: fso-harness
+$Created: 10/15/26 at 03:00:00
+$Modified: 10/15/26 at 03:00:00
+$Notes:
+Empty space with the player alone. Drill targets are created from Lua.
+$End Notes:
+
+$Mission Desc:
+Pilot drill range.
+$end_multi_text
+
++Game Type Flags: 1
+
++Flags: 0
+
++Disallow Support: 1
+
++Player Entry Delay:
+0.000000
+
++Viewer pos: 0.000000, 0.000000, -200.000000
++Viewer orient:
+	1.000000, 0.000000, 0.000000,
+	0.000000, 1.000000, 0.000000,
+	0.000000, 0.000000, 1.000000
+
+#Plot Info
+
+$Tour: Drill
+$Pre-Briefing Cutscene:
+$Pre-Mission Cutscene:
+$Next Mission Success:
+$Next Mission Partial:
+$Next Mission Failure:
+
+#Briefing
+$start_briefing
+$num_stages: 1
+$start_stage
+$multi_text
+Drill.
+$end_multi_text
+$voice: none.wav
+$camera_pos: 0.000000, 0.000000, -500.000000
+$camera_orient:
+	1.000000, 0.000000, 0.000000,
+	0.000000, 1.000000, 0.000000,
+	0.000000, 0.000000, 1.000000
+$camera_time: 500
+$num_lines: 0
+$num_icons: 0
+$end_stage
+$end_briefing
+
+#Debriefing_info
+
+$Num stages: 0
+
+#Players		;! 1 total
+
+$Starting Shipname: Alpha 1
+$Ship Choices: (
+	"GTF Myrmidon"	1
+)
+
++Weaponry Pool: (
+	"Subach HL-7"	4
+	"Rockeye"	40
+)
+
+#Objects		;! 1 total
+
+$Name: Alpha 1		;! Object #0
+$Class: GTF Myrmidon
+$Team: Friendly
+$Location: 0.000000, 0.000000, 0.000000
+$Orientation:
+	1.000000, 0.000000, 0.000000,
+	0.000000, 1.000000, 0.000000,
+	0.000000, 0.000000, 1.000000
+$IFF: IFF 1
+$AI Behavior: None
+$Cargo 1: Nothing
++Initial Velocity: 0
++Initial Hull: 100
++Subsystem: Pilot
++Primary Banks: ( "Subach HL-7" "Subach HL-7" )
++Secondary Banks: ( "Rockeye" "Rockeye" )
+$Arrival Location: Hyperspace
+$Arrival Cue: ( true )
+$Departure Location: Hyperspace
+$Departure Cue: ( false )
+$Determination: 10
++Flags: ( "cargo-known" "player-start" )
++Respawn priority: 0
++Orders Accepted: 0
++Group: 0
++Score: 0
+
+#Wings		;! 1 total
+
+$Name: Alpha
+$Waves: 1
+$Wave Threshold: 0
+$Special Ship: 0
+$Arrival Location: Hyperspace
+$Arrival Cue: ( true )
+$Departure Location: Hyperspace
+$Departure Cue: ( false )
+$Ships: (
+	"Alpha 1"
+)
+$AI Goals: ( goals ( ai-chase-any 89 ) )
++Hotkey: 0
++Flags: ( "no-arrival-music" )
+
+#Events		;! 0 total
+
+#Goals		;! 0 total
+
+#Waypoints		;! 0 lists total
+
+#Messages		;! 0 total
+
+#Reinforcements		;! 0 total
+
+#Background bitmaps		;! 0 total
+
+$Num stars: 500
+$Ambient light level: 7895160
+
+#Asteroid Fields
+
+#Music
+
+$Event Music: None
+$Briefing Music: None
+
+#End

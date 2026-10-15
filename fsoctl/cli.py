@@ -22,7 +22,7 @@ VERBS: dict[str, tuple[str, Callable, Callable]] = {}
 # Modules that register verbs, imported once by main(). A new verb module goes in this list.
 _VERB_MODULES = ("launcher", "xinput", "logs", "game", "record", "build", "scratch", "vp", "fred",
                  "crash", "validate", "frame_stats", "model_info", "docs",
-                 "compare", "match")
+                 "compare", "match", "guide")
 
 
 def register(name: str, help_text: str, configure: Callable[[argparse.ArgumentParser], None]):

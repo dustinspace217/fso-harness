@@ -16,7 +16,15 @@ What it checks, against this build's own scripting.json (the api_docs cache):
      name the code rebinds (`local ba`, `ba =`, a parameter, a loop variable).
   2. Colon calls (with parentheses or the string/table call forms) on the control_info functions
      whose C++ bindings parse no self argument.
-Both run on the code with comments and string literals blanked, so text inside them never
+  3. Handle members that exist nowhere: `x.Field` with a capitalised name (FSO properties are
+     PascalCase) and `x:method(...)` calls, where the name is a member of no class or library in
+     this build's API, is not defined by the code (assignment, table-constructor key, `function
+     x:name`), and is not a Lua string method. A misspelt field aborted the engine
+     (`Stats.MissionPrimaryFriendlyHits`, 2026-10-15) and an invented method raised a Lua error
+     (`ship:isWarpingOut`). Limit: a real name on the wrong handle type still passes (`Linked`
+     is on weaponbanktype, not weaponbank, and reading it on a bank aborted the engine); that
+     would need the handle's type, which the text does not give.
+All run on the code with comments and string literals blanked, so text inside them never
 matches. Files the code loads with loadfile("/abs/path") / dofile("/abs/path") in code (not in a
 comment) are checked too, one level deep; the files that could not be checked are reported back
 so a "passed" never overstates what was looked at.
@@ -54,6 +62,26 @@ _FILE_MAX_BYTES = 1 << 20      # larger "scripts" are not checked (and not read 
 _FILES_MAX = 20                # loaded files checked per call
 _REPORT_MAX = 10               # problems listed in a refusal; the rest are counted
 _LONG_OPEN = re.compile(r"\[(=*)\[")
+# Check 3. A capitalised field after an expression (not after "..", the concatenation operator),
+# and a colon call followed by a call opener.
+# The owner is a lookbehind, not consumed: consuming it skipped every second link of a chain, so
+# me.Stats.MissionPrimaryFriendlyHits (the crash this check exists for) passed (red test).
+_FIELD_USE = re.compile(r"(?<=[\w)\]])\s*\.(?!\.)\s*([A-Z]\w*)")
+# hv holds whatever variables the running hook passes (hv.Ship, hv.Killer, hv.Beam...), so its
+# members are not in the API listing.
+_DYNAMIC_LIBS = frozenset({"hv", "HookVariables"})
+# A string-argument call (s:f"x") is not seen: string literals are blanked before matching.
+_METHOD_USE = re.compile(r"[\w)\]]\s*:\s*([A-Za-z_]\w*)\s*[(\"'{\[]")
+_CTOR_KEY = re.compile(r"[{,;]\s*([A-Za-z_]\w*)\s*=(?!=)")
+_ANY_KEY_SET = re.compile(r"\.\s*([A-Za-z_]\w*)\s*=(?!=)")
+# A name the code builds as a table (`t = {`, `t = t or {`, `local t = {`): its keys are the
+# code's own (A1.cfg.Kp read as `A1.cfg.Kp or 17`), not API members.
+_TABLE_ROOT = re.compile(r"(?<![\w.:])([A-Za-z_]\w*)\s*=\s*(?:[A-Za-z_][\w.]*\s+or\s+)?\{")
+_CHAIN_BACK = 200       # characters scanned back from a field to find the chain's root name
+_FUNC_DEF = re.compile(r"\bfunction\s+[\w.]+[.:]([A-Za-z_]\w*)")
+# Lua 5.1 string methods (s:lower() and friends); FSO adds no others to strings.
+_STRING_METHODS = frozenset({"byte", "char", "dump", "find", "format", "gmatch", "gsub", "len",
+                             "lower", "match", "rep", "reverse", "sub", "upper"})
 
 
 def strip_comments_and_strings(code: str) -> str:
@@ -115,6 +143,85 @@ def library_members(api: dict) -> dict[str, set[str]]:
             libs[short] = members
             libs[el["name"]] = members
     return libs
+
+
+def api_names(api: dict) -> set[str]:
+    """Return every member name of every class and library in the API (and the names themselves)."""
+    names = set()
+    for el in api.get("elements", []):
+        for key in ("name", "shortName"):
+            if el.get(key):
+                names.add(el[key])
+        names.update(c["name"] for c in el.get("children", []) if "name" in c)
+    return names
+
+
+def declared_keys(texts: list[str]) -> set[str]:
+    """Return every key the code defines anywhere: t.k = ..., { k = ... }, function t:k / t.k."""
+    keys = set()
+    for bare in texts:
+        for m in _DECLARE.finditer(bare):
+            keys.add(m.group(2) or m.group(4))
+        keys.update(m.group(1) for m in _CTOR_KEY.finditer(bare))
+        keys.update(m.group(1) for m in _FUNC_DEF.finditer(bare))
+        keys.update(m.group(1) for m in _ANY_KEY_SET.finditer(bare))
+    return keys
+
+
+def table_roots(texts: list[str]) -> set[str]:
+    """Return the names the code builds as tables (see _TABLE_ROOT)."""
+    return {m.group(1) for bare in texts for m in _TABLE_ROOT.finditer(bare)}
+
+
+def _chain_root(bare: str, dot: int) -> str:
+    """Return the first name of the dotted chain ending just before offset `dot` ("" if none).
+
+    Walks back one link at a time (blanks, a name, blanks, a single dot), at most _CHAIN_BACK
+    characters; blanks count only next to a dot, so `if hv.Weapon` gives "hv", not "if".
+    """
+    i, stop, root = dot, max(0, dot - _CHAIN_BACK), ""
+    while i > stop:
+        j = i
+        while j > stop and bare[j - 1] in " \t":
+            j -= 1
+        k = j
+        while k > stop and (bare[k - 1].isalnum() or bare[k - 1] == "_"):
+            k -= 1
+        if k == j:
+            break                                    # no name here: a call, an index, or start
+        root = bare[k:j]
+        while k > stop and bare[k - 1] in " \t":
+            k -= 1
+        if k > stop and bare[k - 1] == "." and not (k - 1 > stop and bare[k - 2] == "."):
+            i = k - 1                                # one more link to the left
+        else:
+            break
+    return root
+
+
+def member_problems(bare: str, names: set[str], keys: set[str],
+                    roots: frozenset[str] | set[str] = frozenset()) -> list[str]:
+    """Return one message per field or method name that exists nowhere (check 3; empty = clean).
+
+    Receives the blanked code, the API's names, the keys the code defines and the names it
+    builds as tables (fields under those are skipped).
+    """
+    found = set()
+    for m in _FIELD_USE.finditer(bare):
+        name = m.group(1)
+        if _chain_root(bare, m.start()) in roots | _DYNAMIC_LIBS:
+            continue
+        if name not in names and name not in keys:
+            found.add(f".{name}: no class or library in this build's API has a member '{name}' "
+                      f"(check the handle's class in api_docs scripting.lua)")
+    for m in _METHOD_USE.finditer(bare):
+        name = m.group(1)
+        # The no-self control_info functions are API names; check 2 reports their colon misuse.
+        if (name not in names and name not in keys and name not in _STRING_METHODS
+                and name not in _NO_SELF):
+            found.add(f":{name}(): no class or library in this build's API has a method "
+                      f"'{name}' (check the handle's class in api_docs scripting.lua)")
+    return sorted(found)
 
 
 def declared(texts: list[str]) -> set[tuple[str, str]]:
@@ -187,7 +294,8 @@ def check(code: str, scripting_json: Path) -> tuple[list[str], list[str]]:
     problems: at most _REPORT_MAX messages plus a count line. unchecked: loaded paths that were
     not read (relative, missing, special, oversize, or past _FILES_MAX).
     """
-    libs = library_members(json.loads(scripting_json.read_text()))
+    api = json.loads(scripting_json.read_text())
+    libs, names = library_members(api), api_names(api)
     bare = strip_comments_and_strings(code)
     texts, unchecked = [(code, bare, "")], []
     for i, path in enumerate(_loaded_paths(code, bare)):
@@ -201,7 +309,10 @@ def check(code: str, scripting_json: Path) -> tuple[list[str], list[str]]:
         if q and not q.group(2).startswith("/"):
             unchecked.append(q.group(2))
     decl = declared([b for _, b, _ in texts])
-    found = [prefix + p for text, b, prefix in texts for p in problems_in(text, b, libs, decl)]
+    keys = declared_keys([b for _, b, _ in texts])
+    roots = table_roots([b for _, b, _ in texts])
+    found = [prefix + p for text, b, prefix in texts
+             for p in problems_in(text, b, libs, decl) + member_problems(b, names, keys, roots)]
     if len(found) > _REPORT_MAX:
         found = [*found[:_REPORT_MAX], f"... and {len(found) - _REPORT_MAX} more"]
     return found, unchecked
