@@ -45,7 +45,17 @@ Mission modes (all optional `A1.cfg` fields; the drill has a matching exercise f
   `bomber_bonus` (2000 m) closer than they are, and nothing farther than `leash` (2500 m) from
   the guarded ships is chased. With `intercept` (default on) a bomb homing on a guarded ship
   is shot down before anything else. `intercept = false, bomber_bonus = 0, leash = 1e9` is the
-  plain dogfighter, for comparison.
+  plain dogfighter, for comparison. Any small ship of another team whose target is a guarded
+  ship counts as an enemy, whatever its team's standing (turncoats stay Neutral). Options:
+  - `aimed_bonus` (1500 m): an enemy targeting a guarded ship counts that much closer.
+  - `guard_weakest = true`: with nothing to fight, hold station by the guarded ship with the
+    least hull instead of the first on the list.
+  - `spare = { wing, count, release, disable }`: once `count` ships of that wing have appeared
+    and one is left, target it and order all fighters to disable it (`disable = true`; repeated
+    every 3 s) or ignore it, and never shoot it, until a ship named `release ...` appears. For
+    missions whose next wave is cued on a wave's destruction.
+  - `suspects = {names}`, `screen_ahead` (m), `ab_chase` (m), `missile_block = true`: tried in
+    The Hammer and the Anvil and found no help (table below); kept for comparison.
 - **Strike** (`strike = "<ship>"`): fly at the named ship, fire the selected secondary
   every 0.25 s from 500 to 2000 m with the nose within 6 degrees (the engine refuses an
   unlocked bomb, ship.cpp:14265, so the refusals are the lock check), then break away past it.
@@ -177,12 +187,48 @@ waypoints) and from tracks of earlier runs, which is a veteran's knowledge, not 
 player's. Two successful runs is not a success rate. The idle-hold change applies to every mode
 and the escort and duel drills were not re-run after it.
 
+Re-recorded with MediaVPs (`--mods fsport-mediavps-4.7.2,fsport-3.7.3,MVPS-4.7.3`, the newest
+FSPort MediaVPs and the MediaVPs version it requires): tries 1-4 died in the escape after the
+fighter bay, try 5 got all three goals. The deaths were Manticore rams (collision damage skips
+shields: hull 100% to 51% in one contact, with shields untouched), found with a per-frame hit
+tally after a 1 Hz sampler had missed them. Escape changes: afterburner and energy to shields
+while the warp drive is out, continuous jinking, Alt-J only into clear space (no ship within
+800 m inside 25 degrees of the nose). No table difference between the stacks explains why the
+MediaVPs runs died more often; the HD models' collision shapes are unmeasured, and 0 of 4
+against 2 of 3 is within chance.
+
+### FSPort "The Hammer and the Anvil" (sm1-08a, Medium, MediaVPs stack as above)
+
+Escort three Poseidon freighters, each docked to a 600-hit-point "Shield Prototype" container,
+14.6 km at 25 m/s; primary: one container departs, bonus: all three. Five sessions at a time,
+one setting each; `hammer_watch.lua` (outside the repository) logged arrivals, deaths and a
+per-frame tally of the weapons that hit each container.
+
+| Round (5 runs each) | Setting | Containers out | What it showed |
+|---|---|---|---|
+| 1 | pilot off / guard / wing re-ordered / guard + freighters / repeat | off: 0; pilot: 1 every run | the 4 Basilisks of Krishna (~202 s) take Gamma, the Rama Scorpions Alpha, both mostly with MX-50 heat seekers (15-18 hits per lost container), which lasers cannot shoot down |
+| 2 | 1 km screen ahead, `aimed_bonus` 4000, afterburner chase | 2 in one run (`aimed_bonus` alone) | Krishna dies within 3-15 s of arriving, but its first volley is already in flight |
+| 3 | `aimed_bonus` 4000 +/- `guard_weakest` | 2 in one run | the Vasudan Pi and Mu wings arrive friendly beside the convoy, turn Neutral ~40 s later and finish the weakest container (8-27 Avenger hits) |
+| 4 | + `suspects` (shadow the turncoats) | 0 or 1 | shadowing does not stop five ships killing a 5-40% container within seconds |
+| 5 | + `missile_block` | 1 or 0 | 20-35 missiles a run were picked to block; the MX-50 hit count does not move (29-33 vs 32) |
+| 6 | + `spare` the last Rama | **all three in one run**, 2 in three | the mission cues Durga 25 s after the last Rama dies (else 220 s after Rama arrives) and the turncoats 150 s after Durga: a living Rama pushes the turncoats past the convoy's jump |
+| recorded | `aimed_bonus` 4000, `guard_weakest`, `spare` (disable) | **all three**, Vasudan Alliance Medal (Gamma at 1% hull) | 1 of 5 attempts; a batch with the "ignore" order instead lost the spare within 18 s in 5/5 |
+
+Honest limits: all three out in 2 of the 10 runs with the spare tactic as recorded (round 6 and
+the recorded batch). The tactic rests on the
+mission's cue chain (read from the .fs2), a veteran's knowledge. Why "disable" keeps the Rama
+alive is not understood: the ship never reads as disabled and the order is re-sent every 3 s.
+The recorded run also exposed two jump-out bugs, fixed: Alt-J pressed again while the drive
+engages cancels the jump (now one press, then 15 s), and the afterburner held the speed above
+the warp speed the engine waits for (PCM_WARPOUT_STAGE1, within 5%; playercontrol.cpp).
+
 ## Known limits
 
 - Lua cannot read the HUD's missile lock or a missile's homing type: heat seekers are listed by
   class name in `A1.cfg.heat`. The selected secondary bank is read from `weaponbank.Armed`.
 - The gains are derived from the ship's `$Rotdamp` (Kp 6.0, Kd 1.3 at the Myrmidon's 0.35 s) and
-  were flown on the Myrmidon only. Afterburner and defensive jinking are not used yet.
+  were flown on the Myrmidon only. The afterburner is used only to run for the jump (and with
+  `ab_chase`); Lua cannot hold the key, so `physics.AfterburnerActive` stands in for it.
 - The 0.25 s history gates reset the lead and rate estimates every frame above ~4x time
   compression: fly at 1x.
 - After a mission restart the pilot resets itself (the clock going backwards is the signal);

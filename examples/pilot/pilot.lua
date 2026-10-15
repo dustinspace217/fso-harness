@@ -359,6 +359,8 @@ A1.cfg.leash = A1.cfg.leash or 2500
 -- killed the freighter with lasers in ~45 s while a 1500 m bonus left the pilot on bombers 97%
 -- of the time (escort drill 2026-10-15). 0 switches it off for comparisons.
 A1.cfg.hitter_bonus = A1.cfg.hitter_bonus or 3500
+-- An enemy whose target is a guarded ship counts this many metres closer (default 1500).
+A1.cfg.aimed_bonus = A1.cfg.aimed_bonus or 1500
 local hitters = {}
 local function note_hitters(me, guards, now)
 	if #guards == 0 or A1.cfg.hitter_bonus == 0 then return end
@@ -388,7 +390,7 @@ local function threat(e, me, guards)
 		if d < dg then dg = d end
 		if tsig and tsig == g:getSignature() then aimed = true end
 	end
-	if aimed then dg = dg - 1500 end
+	if aimed then dg = dg - A1.cfg.aimed_bonus end
 	-- Escort priorities (players' rule, lparchive FS2 Let's Play updates 4 and 30: bombs, then
 	-- bombers, then the rest): a bomber counts A1.cfg.bomber_bonus metres closer. Leash: a
 	-- fighter far from every guarded ship and not shooting at one is not worth leaving them for.
@@ -402,13 +404,28 @@ local function threat(e, me, guards)
 end
 
 -- Collect live hostile fighters (teams that attack ours). Bounded by the mission's ship list.
+-- Also any small ship of another team whose target is a guarded ship, whatever its team's
+-- standing: in FSPort's "The Hammer and the Anvil" the Vasudan "allies" Pi and Mu turn Neutral
+-- and chase the cargo at priority 89 (sm1-08a.fs2 events "HOL revealed", "HOL Goal"), and a
+-- team check alone never sees them. The mission's own tip: "Only attack ships that are
+-- targeting the freighters or their cargo."
 local function enemies(me)
 	local list = {}
+	local guarded = {}
+	for _, n in ipairs(A1.cfg.guard or {}) do
+		local g = mn.Ships[n]
+		if g and g:isValid() then guarded[g:getSignature()] = true end
+	end
 	for i = 1, #mn.Ships do
 		local s = mn.Ships[i]
-		if s:isValid() and not s:isDying() and s.Team:attacks(me.Team) and is_small(s)
-				and not s:isArrivingWarp() then
-			list[#list + 1] = s
+		if s:isValid() and not s:isDying() and is_small(s) and not s:isArrivingWarp()
+				and not (A1.spare_sig and not A1.spare_released and s:getSignature() == A1.spare_sig) then
+			local hostile = s.Team:attacks(me.Team)
+			if not hostile and next(guarded) and s.Team.Name ~= me.Team.Name then
+				local t = s.Target
+				hostile = t and t:isValid() and guarded[t:getSignature()] or false
+			end
+			if hostile then list[#list + 1] = s end
 		end
 	end
 	return list
@@ -423,6 +440,41 @@ end
 -- (weapons.cpp:4131-4133) and are hit with a doubled radius by lasers
 -- (collideweaponweapon.cpp:65-68), so a fighter can shoot them down.
 A1.cfg.intercept = (A1.cfg.intercept == nil) and true or A1.cfg.intercept   -- switch for comparisons
+-- A1.cfg.missile_block = true: a homing missile (not a bomb: those are shot down above) on its
+-- way to a guarded ship, which we can reach a point on its line before it does; returns the
+-- missile and that point (just outside the guarded hull, on the missile's side), else nil.
+-- The idea: lasers cannot shoot missiles down, but a missile hits whatever ship it meets, and
+-- near the target every missile converges on one line. Measured in FSPort "The Hammer and the
+-- Anvil" (2026-10-15): no effect, 29-33 MX-50 hits on the containers per run with it, 32
+-- without; kept for comparison, off by default.
+local function incoming_missile(me, guards)
+	if #guards == 0 or not A1.cfg.missile_block then return nil end
+	local best, best_t, best_p = nil, 1e9, nil
+	local myspeed = math.max(me.Physics.VelocityMax.z, 1)
+	for i = 1, #mn.Weapons do
+		local w = mn.Weapons[i]
+		local ho = w:isValid() and not w.Class.Bomb and w.HomingObject
+		if ho and ho:isValid() and w.Team:attacks(me.Team) then
+			local hs = ho:getSignature()
+			for _, g in ipairs(guards) do
+				if hs == g:getSignature() then
+					local rel = w.Position - g.Position
+					local d = rel:getMagnitude()
+					local v = w.Physics.Velocity:getMagnitude()
+					if d > 1 and d < 1500 and v > 1 then
+						local p = g.Position + rel / d * (g.Radius + 40)
+						local t = (d - g.Radius - 40) / v
+						-- Reachable: our flight time to the point (straight line, top speed) is less.
+						if t < best_t and p:getDistance(me.Position) / myspeed < t then best, best_t, best_p = w, t, p end
+					end
+					break
+				end
+			end
+		end
+	end
+	return best, best_p
+end
+
 local function incoming_bomb(me, guards)
 	if #guards == 0 or not A1.cfg.intercept then return nil end
 	local best, best_t = nil, 1e9
@@ -577,6 +629,7 @@ local function reset_after_restart()
 	A1.reached, A1.jump_t, A1.goal_sig, A1.goal_entry_done = nil, nil, nil, nil
 	A1.amb_t, A1.amb_done, A1.amb_noted, A1.brake_till = nil, nil, nil, nil
 	A1.scanned, A1.scan_group, A1.close_t, A1.idle_p = {}, nil, nil, nil
+	A1.spare_seen, A1.spare_sig, A1.spare_step, A1.spare_menu, A1.spare_t, A1.spare_released = nil, nil, nil, nil, nil, nil
 	jink.till, jink.ready, jink.dir = -1, -1, nil
 	strike.phase, strike.until_t, strike.last_try, strike.disarming, strike.escaping = "approach", -1, -100, false, false
 	note("mission clock went back: restart detected, pilot state reset")
@@ -1155,6 +1208,77 @@ local function fly()
 		if n < wing_order.n then wing_order.n = n end
 	end
 
+	-- 0s. Spare the last ship of a wave (A1.cfg.spare = { wing = "<name prefix>", count = n,
+	-- release = "<name prefix>" }): a mission's next wave can be cued on the previous one being
+	-- destroyed, and some waves are worse than the ship that holds them back. In FSPort's "The
+	-- Hammer and the Anvil" the Vasudan turncoats arrive 150 s after the Durga wave, which arrives
+	-- 25 s after the last Rama dies (or 220 s after Rama arrives); with Rama dead by ~360 s they
+	-- turned on the containers before the convoy could jump, in every run (sm1-08a.fs2 cues,
+	-- rounds 1-5 of 2026-10-15). A player keeps one alive with the comm menu: target it and order
+	-- all fighters to "Disable My Target" (sp.disable, re-sent every 3 s), else "Ignore My Target".
+	-- The pilot never shoots it (enemies() skips A1.spare_sig) until a ship whose name starts with
+	-- `release` appears.
+	local sp = A1.cfg.spare
+	if sp and not A1.spare_released then
+		A1.spare_seen = A1.spare_seen or {}
+		local alive, last = 0, nil
+		for i = 1, #mn.Ships do
+			local o = mn.Ships[i]
+			if o:isValid() and o.Name:sub(1, #sp.wing + 1) == sp.wing .. " " then
+				A1.spare_seen[o.Name] = true
+				if not o:isDying() then alive, last = alive + 1, o end
+			end
+			if o:isValid() and sp.release and o.Name:sub(1, #sp.release + 1) == sp.release .. " " then
+				A1.spare_released = true
+				note("spare released: " .. o.Name .. " arrived")
+			end
+		end
+		local seen = 0
+		for _ in pairs(A1.spare_seen) do seen = seen + 1 end
+		if not A1.spare_sig and alive == 1 and seen >= (sp.count or 1) then
+			-- Measured in The Hammer and the Anvil: with "Disable" re-sent every 3 s the spared
+			-- Scorpion lived in 4 of 5 runs (it never read as Disabled, and why the order holds the
+			-- wing off is not understood); with "Ignore" it died within 18 s in 5 of 5.
+			A1.spare_sig, A1.spare_step = last:getSignature(), sp.disable and "disable" or "ignore"
+			note("sparing " .. last.Name .. " (last of " .. sp.wing .. ")")
+		end
+		local spare = nil
+		if A1.spare_sig then
+			for i = 1, #mn.Ships do
+				local o = mn.Ships[i]
+				if o:isValid() and o:getSignature() == A1.spare_sig then spare = o; break end
+			end
+			if not spare then A1.spare_released = true; note("spared ship lost") end
+		end
+		if spare and not A1.spare_released then
+			if A1.spare_step == "disable" and spare.Disabled then A1.spare_step = "ignore"; note(spare.Name .. " disabled") end
+			local want = (A1.spare_step == "disable") and "DISABLE_MESSAGE" or (A1.spare_step == "ignore" and "IGNORE_MESSAGE") or nil
+			if want and not wing_order.step then
+				if A1.spare_menu == nil and not hu.isCommMenuOpen() and now - (A1.spare_t or -100) > 3 then
+					me.Target = spare
+					ci.useButtonControl(-1, want)
+					A1.spare_menu, A1.spare_t = want, now
+				elseif A1.spare_menu and hu.isCommMenuOpen() then
+					local picked = false
+					for i = 1, #mn.CommItems do
+						local c = mn.CommItems[i]
+						if c:isValid() and c.Name == "All Fighters" then
+							if c.Active then picked = c:selectItem() end
+							break
+						end
+					end
+					if not picked then ci.useButtonControl(-1, "SQUADMSG_MENU") end
+					note((picked and "ordered: " or "could not order: ") .. A1.spare_menu .. " on " .. spare.Name)
+					if picked and A1.spare_step == "ignore" then A1.spare_step = "done" end
+					A1.spare_menu = nil
+				elseif A1.spare_menu and now - A1.spare_t > 1 then
+					A1.spare_menu = nil
+				end
+				if A1.spare_menu or (A1.spare_t and now - A1.spare_t < 0.6) then order_target = spare end
+			end
+		end
+	end
+
 	-- 0. Did the ship we were chasing just die? (Log only; kill credit is the engine's call.)
 	if cur_target_name and not live_ship(cur_target_name) then
 		note("target gone: " .. cur_target_name)
@@ -1220,6 +1344,7 @@ local function fly()
 			and math.min(bank.WeaponClass.Range, spd * bank.WeaponClass.LifeMax) or 700
 
 	local bomb = incoming_bomb(me, guards)
+	local blk_m, blk_p = incoming_missile(me, guards)
 	if not bomb then A1.on_bomb = false end      -- the intercept log line fires once per bomb run
 	local cap = A1.cfg.strike and live_ship(A1.cfg.strike)
 	A1.striking = false
@@ -1297,12 +1422,51 @@ local function fly()
 		-- out of the Lucifer's fighter bay); fleeing "away from hostiles" alone defaulted to our
 		-- nose, which pointed at the bay, and the pilot died there (most likely to the six
 		-- Manticores; not confirmed).
+		-- Energy to shields for the run (a player's F5/F6/F7 move): the escape is a chase by six
+		-- fighters for the ~30 s until the warp drive returns, and the guns are not the plan.
+		if A1.cfg.ets ~= "shields" then A1.cfg.ets = "shields" end
 		local flee = away_from_hostiles(me)
 		local from = A1.cfg.go_to and live_ship(A1.cfg.go_to.ship)
 		if from then flee = (flee + (me.Position - from.Position):getNormalized() * 1.5):getNormalized() end
 		heading, pitch = steer_to(me, me.Position + flee * 1000, 3.0)
 		throttle = 1.0
-		if now - (A1.jump_t or -100) > 2 then
+		-- Afterburner while fleeing, as a player holds Tab: the pursuers launch from the bay we
+		-- just left, and with the stock speed six of them caught the pilot during the jump
+		-- (Playing Judas with MediaVPs, 2026-10-15). Lua cannot hold the key, so the physics
+		-- flag stands in for it, and only while there is fuel (the engine drains it).
+		-- Only while the drive is out: once Alt-J engages it, the engine moves on only when the
+		-- speed is within 5% of the warp speed (playercontrol.cpp:1150-1200, PCM_WARPOUT_STAGE1),
+		-- and the afterburner held it above that, so the jump never completed (The Hammer and the
+		-- Anvil, attempt B3: six minutes of "Subspace drive engaged").
+		if not me:canWarp() and me.AfterburnerFuelLeft > 0.1 * me.AfterburnerFuelMax then
+			me.Physics.AfterburnerActive = true
+			A1.ab_frame = now
+		end
+		-- Jump only into clear space, as a player points at empty space before Alt-J: once the
+		-- drive engages the engine flies the ship straight ahead and fast, and with six Manticores
+		-- within 200 m one of them rammed or shot the pilot in the jump, 79% to 1% hull in a
+		-- second (Playing Judas with MediaVPs, try 3, "killed by Rama 6"). Clear = no ship within
+		-- 800 m inside 25 degrees of the nose.
+		local blocker
+		local fwd = me.Orientation:getFvec()
+		for i = 1, #mn.Ships do
+			local o = mn.Ships[i]
+			if o:isValid() and o:getSignature() ~= me:getSignature() then
+				local rel = o.Position - me.Position
+				local d = rel:getMagnitude()
+				if d < 800 + o.Radius and d > 1 and rel:getDotProduct(fwd) / d > 0.906 then blocker = o; break end
+			end
+		end
+		if blocker and now - (A1.jump_block_t or -100) > 2 then
+			A1.jump_block_t = now
+			note(string.format("jump held: %s ahead (%.0f m)", blocker.Name, blocker.Position:getDistance(me.Position)))
+		end
+		-- One press, then hands off while the drive spins up: a second Alt-J during "Subspace drive
+		-- engaged" cancels the jump, and pressing every 2 s kept the pilot in space for six minutes
+		-- after the convoy left (The Hammer and the Anvil, recorded attempt B3). While the drive is
+		-- out (canWarp false; Playing Judas breaks it until Rama arrives) keep trying every 2 s.
+		local wait = me:canWarp() and 15 or 2
+		if not blocker and now - (A1.jump_t or -100) > wait then
 			A1.jump_t = now
 			A1.press[#A1.press + 1] = "END_MISSION"
 		end
@@ -1339,6 +1503,21 @@ local function fly()
 		local mt = me.Target
 		if not (mt and mt:isValid() and mt:getSignature() == cap:getSignature()) then me.Target = cap end
 		heading, pitch, throttle = strike_frame(me, cap, now)
+	elseif blk_m and not bomb then
+		-- 2b. Missile block (see incoming_missile): fly onto the point on the missile's line,
+		-- nose toward the missile so the shields' front quadrant takes it.
+		local d = blk_p:getDistance(me.Position)
+		if d > 30 then
+			heading, pitch = steer_to(me, blk_p, 3.0)
+			throttle = 1.0
+		else
+			heading, pitch = steer_to(me, blk_m.Position, A1.cfg.gain)
+			throttle = 0.2
+		end
+		if A1.blk_sig ~= blk_m:getSignature() then
+			A1.blk_sig = blk_m:getSignature()
+			A1.stats.blocks = (A1.stats.blocks or 0) + 1
+		end
 	elseif bomb then
 		-- 2a. Escort priority 1: shoot down a bomb heading for a guarded ship. Same lead and
 		-- gun-mount aim as against fighters; the cone is wider because a bomb's hit radius is
@@ -1500,15 +1679,67 @@ local function fly()
 		-- A1.cfg.guard_away if set (SM1-01: the Psamtik, which the freighters dock with, so a fixed
 		-- side-offset ended up against its hull; test flight 3 got pinned there).
 		local g = guards[1]
-		local away = g.Orientation:getRvec()
-		local psa = A1.cfg.guard_away and live_ship(A1.cfg.guard_away)
-		if psa and psa.Position:getDistance(g.Position) < 6000 then
-			away = (g.Position - psa.Position):getNormalized()
+		-- A1.cfg.guard_weakest = true: hold station by the guarded ship with the least hull
+		-- instead of the first on the list; it is the one the next attack finishes. In "The
+		-- Hammer and the Anvil" each wave wore a container down and the Vasudan turncoats,
+		-- arriving 150-275 m from the convoy, finished the weakest within 9 s of turning.
+		if A1.cfg.guard_weakest then
+			for _, c in ipairs(guards) do
+				if c.HitpointsLeft / math.max(c.HitpointsMax, 1) < g.HitpointsLeft / math.max(g.HitpointsMax, 1) then g = c end
+			end
 		end
-		local spot = g.Position + away * 500
-		local d = spot:getDistance(me.Position)
-		heading, pitch = steer_to(me, spot, 2.0)
-		throttle = (d > 1500) and 1.0 or (d > 300 and 0.6 or 0.2)
+		-- A1.cfg.suspects = { names }: ships expected to turn on the convoy (a veteran's
+		-- knowledge: in "The Hammer and the Anvil" the Vasudan wings Pi and Mu arrive friendly
+		-- beside the convoy and turn Neutral ~40 s later, then shred the weakest containers in
+		-- seconds). While one is still on our team and within 3 km, hold 250 m behind the one
+		-- nearest the station ship, nose on it, guns cold; when it turns, enemies() picks it up
+		-- with the pilot already in position. Measured: no help (round 4, 2026-10-15).
+		local shadow
+		for _, n in ipairs(A1.cfg.suspects or {}) do
+			local sp = mn.Ships[n]
+			if sp and sp:isValid() and not sp:isDying() and sp.Team.Name == me.Team.Name
+					and sp.Position:getDistance(g.Position) < 3000
+					and (not shadow or sp.Position:getDistance(g.Position) < shadow.Position:getDistance(g.Position)) then
+				shadow = sp
+			end
+		end
+		if shadow then
+			local spot2 = shadow.Position - shadow.Orientation:getFvec() * 250
+			local d2 = spot2:getDistance(me.Position)
+			if d2 > 300 then
+				heading, pitch = steer_to(me, spot2, 2.0)
+			else
+				heading, pitch = steer_to(me, shadow.Position, A1.cfg.gain)
+			end
+			local maxv = math.max(me.Physics.VelocityMax.z, 1)
+			throttle = clamp((shadow.Physics.Velocity:getMagnitude() + 0.25 * (d2 - 50)) / maxv, 0, 1)
+			if A1.shadow_sig ~= shadow:getSignature() then
+				A1.shadow_sig = shadow:getSignature()
+				note("shadowing " .. shadow.Name)
+			end
+		else
+			local away = g.Orientation:getRvec()
+			local psa = A1.cfg.guard_away and live_ship(A1.cfg.guard_away)
+			if psa and psa.Position:getDistance(g.Position) < 6000 then
+				away = (g.Position - psa.Position):getNormalized()
+			end
+			local spot = g.Position + away * 500
+			-- A1.cfg.screen_ahead = metres: hold that far ahead of the guarded ship along its travel
+			-- instead. In FSPort's "The Hammer and the Anvil" every Shivan wave arrives ahead of the
+			-- convoy (Krishna 1100 m, Durga 1900 m in front of Theta 2, sm1-08a.fs2) and launches
+			-- missiles at the cargo within ~10-20 s, which lasers cannot shoot down; a guard 500 m
+			-- off the side lost a container to Krishna in all five runs of round 1. Measured: the
+		-- screen did not help either (round 2), and alone up front the pilot took heavy damage.
+			if A1.cfg.screen_ahead then
+				local v = g.Physics.Velocity
+				local vm = v:getMagnitude()
+				local fwd = (vm > 1) and v / vm or g.Orientation:getFvec()
+				spot = g.Position + fwd * A1.cfg.screen_ahead
+			end
+			local d = spot:getDistance(me.Position)
+			heading, pitch = steer_to(me, spot, 2.0)
+			throttle = (d > 1500) and 1.0 or (d > 300 and 0.6 or 0.2)
+		end
 	else
 		-- 2i. Nothing to do yet: hold where this idle stretch began (or A1.cfg.idle_at = {x, y, z}),
 		-- still keeping clear of the avoid list. Without this the default cruise (0.66 throttle,
@@ -1550,7 +1781,11 @@ local function fly()
 				if math.random() < 0.5 then side = side * -1 end
 				jink.dir = (o:getFvec() * 0.6 + side):getNormalized()
 				jink.till = now + 0.8 + 0.4 * math.random()
-				jink.ready = jink.till + 0.6           -- at least 0.6 s of attack between jinks
+				-- At least 0.6 s of attack between jinks; none while running for the jump: six
+				-- Manticores sat 150-200 m behind and a ram took half the hull in one contact
+				-- (Playing Judas with MediaVPs, try 5's per-frame tally; tries 3-4 died the same
+				-- way). Try 5, weaving without pause, was the one that got away.
+				jink.ready = jink.till + ((A1.reached and A1.cfg.jump_out) and 0 or 0.6)
 				A1.fq.jinks = (A1.fq.jinks or 0) + 1
 			end
 		end
@@ -1661,6 +1896,21 @@ local function fly()
 	ci.Pitch = pitch
 	ci.Bank = last_bank
 	ci.Forward = throttle
+	-- A1.cfg.ab_chase = metres: afterburner toward a fighter target farther than that, while fuel
+	-- is above 30% (kept for the dogfight). Escort waves launch missiles at the cargo within
+	-- ~10-20 s of arriving (FSPort "The Hammer and the Anvil"), so reaching them sooner looked
+	-- like it would matter. Measured: no help (round 2, 2026-10-15); off by default.
+	if A1.cfg.ab_chase and tgt and tgt:isValid() and not A1.cfg.stealth and throttle > 0.5
+			and tgt.Position:getDistance(me.Position) > A1.cfg.ab_chase
+			and me.AfterburnerFuelLeft > 0.3 * me.AfterburnerFuelMax then
+		me.Physics.AfterburnerActive = true
+		A1.ab_frame = now
+	end
+	-- Release the afterburner on the first frame nothing asked for it (a key let go).
+	if A1.ab_frame and A1.ab_frame ~= now then
+		me.Physics.AfterburnerActive = false
+		A1.ab_frame = nil
+	end
 	-- The same trace, after every override: what was actually commanded, and how far our nose
 	-- and our travel point from the line to the traced ship (degrees).
 	if scan_tgt and A1.cfg.trace == scan_tgt.Name and A1.trace_t2 ~= A1.trace_t then

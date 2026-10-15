@@ -143,6 +143,16 @@ runs the same scenario on two builds side by side (write the steps as a scenario
        `wingman.Orders[1]:getType()` reads ORDER_GUARD. Then: bombs homing on the escort first,
        then whoever is shooting it (the stock guard AI's rule), then bombers. Solo, one fighter
        lost the freighter in all 14 runs; with an ordered wing it survived 15 of 17.
+       From FSPort "The Hammer and the Anvil" (all three containers out, 2 of 10 runs, recorded):
+       - Measure what damages the escorted ship before choosing a tactic: a per-frame tally of
+         the weapon classes that end near it. Heat-seeking missiles (MX-50) cannot be shot down
+         or body-blocked in practice; only killing the launchers earlier helps.
+       - Count enemies by intent, not team: a ship of any other team whose `Target` is your
+         charge is an attacker (turncoat wings switch to Neutral, not Hostile).
+       - Read the mission's arrival cues: a wave cued on another wave's destruction can be held
+         back by keeping one ship of the earlier wave alive. Comm order "Disable My Target"
+         (`DISABLE_MESSAGE`, then "All Fighters") kept it alive in 4 of 5 runs; "Ignore My
+         Target" lost it within 18 s in 5 of 5.
      - **Strike:** gun down the target's `weapons` subsystem before bombing (set
        `ship.TargetSubsystem`, like the target-subsystem key): with it destroyed, turrets stop
        firing at bombs (aiturret.cpp:803-805). Release bombs inside ~1 km. With both, 3/3
@@ -164,6 +174,12 @@ runs the same scenario on two builds side by side (write the steps as a scenario
          drifted into a sentry's detection range while waiting for the next ship.
        - Read the mission's own debriefing tips (`#Debriefing_info`, the `$Recommendation text`
          lines, in the .fs2) before planning: they are the designers' hints.
+   - **Jumping out (Alt-J, `END_MISSION`):** press once and leave it: a second press while
+     "Subspace drive engaged" cancels the jump. The engine then flies the ship and completes the
+     jump only when the speed is within 5% of the warp speed (playercontrol.cpp,
+     PCM_WARPOUT_STAGE1), so the afterburner must be off. Point at empty space first: the ship
+     flies straight and fast and a ram during it can kill. A ram went past the shields
+     (hull 100% to 51% in one contact, shields still full; Playing Judas, 2026-10-15).
    - **Diagnose a failed run before changing the pilot.** Each fix that worked in Playing Judas
      came from one observation, not from a guess:
      - When did an event fire? `( is-event-true-delay !Name! N )` is true once the event has been
@@ -172,6 +188,9 @@ runs the same scenario on two builds side by side (write the steps as a scenario
      - Where was everything? A second `On Frame` hook that appends one row a second (positions of
        the player and the ships that matter) to a global table, read back with `lua`. FSO's `io`
        library is its own (no `io.open`); return the rows as text.
+     - A sampler slower than the event cannot rule it out: 1 Hz distance rows showed no ship
+       near the player, but a per-frame hit tally found the ram that took half its hull. Tally
+       hits and contacts every frame before excluding a cause.
      - Which rule steered? Log the controls actually sent after every override, plus the angle
        between the nose and the target. A rule you did not suspect (a 0.66-throttle default, an
        avoidance push) shows up there.

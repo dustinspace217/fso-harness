@@ -60,7 +60,7 @@ ALLOWED_GLOBALS = {
     "A1", "DR", "ba", "mn", "hv", "hu", "tb", "gr", "opt", "engine",
     "BUTTON_CONTROL_LUA_ADDITIVE", "BUTTON_CONTROL_NORMAL", "FLIGHT_CONTROL_LUA_FULL",
     "FLIGHT_CONTROL_NORMAL", "ORDER_ATTACK",
-    "math", "string", "table", "ipairs", "pairs", "pcall", "tostring", "type",
+    "math", "string", "table", "ipairs", "pairs", "next", "pcall", "tostring", "type",
 }
 
 

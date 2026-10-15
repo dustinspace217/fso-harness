@@ -1,12 +1,13 @@
 # FSO Harness Implementation Plan
 
-## Status (updated 2026-10-15 ~12:30)
-Phase: post-v1 maintenance; arc "mission-type skills" (section at the end) closed with Playing Judas
-Done: v1; scripted pilot v2 (69a52b9); mission-type skills (escort/strike/recon/stealth), lua field
-check, guide tool, Playing Judas all goals on Medium (iteration 13 + recorded rerun); committed
-with this update and published
-Next: FSPort convoy-escort mission (shield generators) to all goals on Medium+, then a recorded run
-Blocked: nothing (multi-agent QA of this arc not run: Dustin asked for docs, commit and push)
+## Status (updated 2026-10-15 ~14:30)
+Phase: post-v1 maintenance; pilot arcs "Playing Judas" and "The Hammer and the Anvil" closed
+Done: Playing Judas all goals (plain FSPort, then MediaVPs re-record); The Hammer and the Anvil
+all three containers (recorded; 2 of 10 runs with the spare tactic); escort options, jump-out
+fixes; docs; committed and published with this update
+Next: nothing scheduled; open: re-run the escort/duel drills after the idle-hold and jump-out
+changes; the "disable" spare mechanism is unexplained
+Blocked: nothing
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -3672,3 +3673,13 @@ as proven.
   keep avoiding) where it used to cruise at 0.66 throttle. Escort/duel drills not re-run since.
 - New pilot options: scan_tiers/front_first, avoid_until/avoid_lapse, ambush (+hold_until),
   go_to, jump_out, idle_at, trace; "close pass" logging.
+
+### Progress 2026-10-15 12:30-14:30 (MediaVPs re-record, The Hammer and the Anvil)
+- Dustin 12:10: "Why no mediavps?" Every Judas run had used `--mods fsport-3.7.3` alone, reused
+  without a check. Re-recorded with the newest FSPort MediaVPs stack; the escape after the bay
+  needed afterburner/shields/jinking/clear-path changes (rams by the pursuers, per-frame tally).
+- Dustin 12:16: five concurrent sessions, one setting each, iterate. Seven rounds on
+  The Hammer and the Anvil; the winning lever was the mission's cue chain (spare the last Rama).
+- Deviation: no multi-agent review for these changes, by Dustin's ruling (14:17): "No multi-agent
+  review is necessary for this. The other agents do not have the context you gathered, they'll
+  be critiquing the scripting in isolation, which is super low value."

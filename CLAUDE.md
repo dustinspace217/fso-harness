@@ -87,6 +87,11 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
 - Behaviour shared by every mode (the idle hold, the ram check, ETS) changes every drill: re-run
   the drills before calling a change safe. Results in its README carry sample sizes; two runs is
   not a rate.
+- Mission-specific knowledge (waiting points, cue chains, which wing to spare) lives in setup
+  files outside the repo; the README says when a result rests on it (a veteran's knowledge).
+- Measure before explaining: per-frame tallies (hits by weapon class, contacts) and the mission
+  file's cues overturned three confident explanations in one day (2026-10-15); a 1 Hz sampler
+  cannot rule out a sub-second event.
 - Parallel sessions: each Vulkan session costs ~1 core, ~0.55 GB RAM, ~0.5 GB VRAM; the software
   renderer ~8 cores. `FSO_HARNESS_MAX_SESSIONS` caps them (default 3).
 
