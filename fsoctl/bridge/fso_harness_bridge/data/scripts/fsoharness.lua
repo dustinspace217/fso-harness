@@ -436,6 +436,17 @@ local function try(fn, fallback)
 	return fallback
 end
 
+-- The player's ship handle, or nil. hv.Player is "the player object ... Does not need to be a
+-- ship" (engine scripting.cpp): once the dead player's ship is deleted the engine retypes it to
+-- OBJ_GHOST (object.cpp obj_delete) and the handle stays valid, so isValid() alone let a state
+-- poll read HitpointsMax off a ghost, and that engine-raised error aborted the engine (Playing
+-- Judas batch, 2026-10-15). getBreedName() is on every object handle.
+function H.player_ship()
+	local p = hv.Player
+	if p and p:isValid() and p:getBreedName() == "Ship" then return p end
+	return nil
+end
+
 -- One ship as the state report shows it. A field that cannot be read is null, never a made-up
 -- 0 / false / "?" that reads like a real value (QA finding SF-15: an unreadable hull showed as 0%).
 local function ship_entry(s)
@@ -590,8 +601,9 @@ H.handlers.state = function(args)
 	              mission_time = mn.getMissionTime(), paused = H.state_name() == "GS_STATE_GAME_PAUSED",
 	              popup = H.popup or json.null, ships = {}, goals = {}, events = {}, player = json.null }
 	if not mn.isInMission() then return out end
-	if hv.Player and hv.Player:isValid() then
-		out.player = ship_entry(hv.Player)
+	local me = H.player_ship()
+	if me then
+		out.player = ship_entry(me)
 		out.player.collision = H.recent_collision() or json.null
 		out.player.collisions_total = H.collisions_total
 		out.player.touching = H.touching()
@@ -716,7 +728,7 @@ local function flight_stop_reason(stop_at, ticks, max_ticks, collisions_at_start
 	if not mn.isInMission() then return "mission_end" end
 	-- Death first: a ram that kills the player is reported as player_dead, not as a contact to
 	-- steer away from (QA CR-11).
-	if not (hv.Player and hv.Player:isValid()) then return "player_dead" end
+	if not H.player_ship() then return "player_dead" end
 	-- A NEW contact during the flight hands control back at once, the way a pilot reacts, with
 	-- the direction to what was hit in the reply. Contact that began before the flight (still
 	-- grinding) does not count, so an escape flight can fly off (QA SLA-1). Before "time" so a
@@ -743,7 +755,7 @@ H.handlers.pilot = function(args, seq)
 		H.raise("cannot fly while a dialog is up: " .. tostring(H.popup), "answer the popup first")
 	end
 	if H.piloting then H.raise("a pilot command is already running", "wait for it to finish") end
-	if not (hv.Player and hv.Player:isValid()) then
+	if not H.player_ship() then
 		H.raise("no player ship to fly", "the player may be dead or not yet arrived")
 	end
 	local seconds = clamp(args.seconds or 1, 0.05, 60)
@@ -1047,8 +1059,8 @@ end
 -- safe; hv.Ship and hv.ShipB are ship-typed, so their .Name exists.
 local function on_ship_collision()
 	if hv.Weapon ~= nil or hv.Beam ~= nil then return end
-	local me = hv.Player
-	if not (me and me:isValid()) then return end
+	local me = H.player_ship()          -- HitpointsMax below is ship-only (QA CR-2)
+	if not me then return end
 	local sig, a, b = me:getSignature(), hv.Ship, hv.ShipB
 	local other
 	if a and a:isValid() and a:getSignature() == sig then other = b
@@ -1158,8 +1170,8 @@ end
 
 -- Append one row for the player ship (nothing while there is no player).
 local function telem_record()
-	local me = hv.Player
-	if not (me and me:isValid()) then return end
+	local me = H.player_ship()          -- Target and HitpointsMax are ship-only (QA CR-1)
+	if not me then return end
 	telem_sync()
 	local T, t = H.telem, mn.getMissionTime()
 	local f = me.Orientation:getFvec()

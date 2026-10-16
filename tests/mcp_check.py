@@ -64,8 +64,11 @@ _, budget = calls[-1]
 # launch.lock wait + bridge.lock wait + scope start (10 s) + readiness + a stop on failure: the
 # runner wait, the scope's polite stop (20 s) and its kill wait (QA CR-1/SL-2/TA-4).
 from fsoctl import scope  # noqa: E402
-STOP_WORST = launcher._RUNNER_EXIT_WAIT + scope.POLITE_STOP_SEC + scope._KILL_WAIT
-assert budget >= 240 + launcher._LOCK_WAIT + bridge_install._LOCK_WAIT + 10 + STOP_WORST, budget
+from fsoctl import sound  # noqa: E402
+STOP_WORST = (launcher._RUNNER_EXIT_WAIT + scope.POLITE_STOP_SEC + scope._KILL_WAIT
+              + sound.REMOVE_WORST_SEC)
+assert budget >= (240 + launcher._LOCK_WAIT + bridge_install._LOCK_WAIT + 10 + STOP_WORST
+                  + sound.LAUNCH_WORST_SEC), budget
 assert server.TERM_GRACE_SEC >= STOP_WORST + 5, (server.TERM_GRACE_SEC, STOP_WORST)
 assert "--interactive" not in calls[-1][0]          # default: -noninteractive stays on
 server.launch(interactive=True, runtime=600)
@@ -76,7 +79,7 @@ S = "s12345678"
 CASES = {
     "launch": dict(mods="MVPS", mission="m.fs2", pilot="existing:P", pilot_source="/tmp/p",
                    skip_movies=True, interactive=True, runtime=600, extra_args=["-window"],
-                   network="real"),
+                   network="real", sound=True),
     "status": dict(id=S), "stop": dict(id=S), "list_sessions": {}, "cleanup": {},
     "version": {}, "guide": dict(section="-fly"),
     "screenshot": dict(id=S, crop="10x10+0+0", scale=0.5, full=True),

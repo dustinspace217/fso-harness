@@ -1,12 +1,14 @@
 # FSO Harness Implementation Plan
 
-## Status (updated 2026-10-15 ~14:30)
-Phase: post-v1 maintenance; pilot arcs "Playing Judas" and "The Hammer and the Anvil" closed
-Done: Playing Judas all goals (plain FSPort, then MediaVPs re-record); The Hammer and the Anvil
-all three containers (recorded; 2 of 10 runs with the spare tactic); escort options, jump-out
-fixes; docs; committed and published with this update
-Next: nothing scheduled; open: re-run the escort/duel drills after the idle-hold and jump-out
-changes; the "disable" spare mechanism is unexplained
+## Status (updated 2026-10-15 ~16:30)
+Phase: post-v1 maintenance; `launch --sound` added (HIGH-RISK QA closed, see "Post-v1: launch --sound")
+Done: Playing Judas and The Hammer and the Anvil recorded (silent); the Disable-spare mechanism
+explained (2026-10-15 14:45); `--sound` per-session null sinks, fail-closed routing, device-name
+check, root-tagged cleanup; committed locally, NOT published
+Recorded with sound (2026-10-15): Playing Judas (try 1) and The Hammer and the Anvil (try 4 of
+a third run; 1 win in 15 sound tries vs 2 in 10 silent earlier, a silent control was stopped at
+1 try once the win came); files in the artifacts folder video/07-*, 08-*
+Next: Dustin's yes before publishing 6093e4e and this status commit
 Blocked: nothing
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -3683,3 +3685,31 @@ as proven.
 - Deviation: no multi-agent review for these changes, by Dustin's ruling (14:17): "No multi-agent
   review is necessary for this. The other agents do not have the context you gathered, they'll
   be critiquing the scripting in isolation, which is super low value."
+
+
+## Post-v1: launch --sound (2026-10-15)
+Goal (Dustin, 14:52): "re-record Playing Judas and hammer and anvil. You can run them
+simultaneously, as long as each recording captures only its own audio". Agreed plan: recorder at
+60 fps with an optional Pulse source; `--sound` drops -nosound for games only, each session gets
+its own null sink, never the speakers, removed at stop; review; re-record both at once.
+QA record (synthesis, probes, Phase A/B, cross-family review) is kept outside the repository.
+
+Deviations from the agreed plan:
+- other (review tier): plan said ELEVATED review; the tier rule's remediation and state-lifetime
+  triggers made it HIGH-RISK (adds state-lifetime-auditor + challenger and the cross-family pass).
+- behavioral-change: the plan's routing check "moves" misrouted streams; it now FAILS the launch
+  instead (streams carry node.dont-reconnect, which makes moves impossible, and dont-fallback).
+- scope-change: added [Sound] CaptureDevice (every --sound launch had opened the desk mic) and a
+  pre-start OpenAL device-name check (FSO falls back to the defaults on a name miss).
+- scope-change: sink names carry a runtime-root tag; cleanup unloads only its own root's sinks.
+- behavioral-change: sink load/unload take a user-wide sound lock; MCP TERM_GRACE_SEC 75 -> 90 and
+  LAUNCH_EXTRA_SEC +80 s for the sound worst cases.
+- other: tests stub the sound server for every test, engine tier included; new `sound` marker,
+  excluded by default.
+
+Appendix: Deferments originated in this change
+| ID | Found by | Severity | What | Why deferred | Fix direction | Detection / revisit | Obsolete when |
+|---|---|---|---|---|---|---|---|
+| DEF-SND-01 | XFA-2 | MEDIUM | a device the engine's OpenAL LISTS but cannot OPEN makes FSO fall through to the next (default) device; for capture that is the mic, for a moment, and nothing detects it | no FSO option for strict selection; the name-miss half is fixed (check_device_names) | an engine-side strict-device option, or hide physical devices from the engine's Pulse client | playback: verify_routing fails the launch; capture: none; revisit if a --sound launch ever logs an OpenAL open failure | FSO gains strict device selection |
+| DEF-SND-02 | MU-8 | LOW | _prepare's closed= pass-through to the session record is unpinned (pre-existing, on a line this change re-touched) | needs a match fixture; outside this change | assert closed=True survives _prepare for a host role | next change to multiplayer _prepare | — |
+| DEF-SND-03 | TA2-6 | LOW | MCP cleanup's 90 s budget is not checked against the sink pass (3 listings + up to 30 s per orphan on a stalled server) | orphans are rare (stop unloads); worst case needs a stalled server and several orphans | cap orphans per cleanup run, or add the sum to mcp_check | a cleanup that times out under MCP | — |

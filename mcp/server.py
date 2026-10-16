@@ -42,8 +42,9 @@ DEFAULT_TIMEOUT = 90
 # Time fsoctl gets to clean up after SIGTERM before SIGKILL. Must cover a stop of the session
 # it started: up to 25 s for the runner (launcher._RUNNER_EXIT_WAIT), then the scope's 20 s
 # polite stop and 10 s kill wait, then status polls (QA SL2-1; raised for runner-first stop,
-# QA CR-1/SL-2/TA-4). tests/mcp_check.py checks the sum.
-TERM_GRACE_SEC = 75
+# QA CR-1/SL-2/TA-4), then a --sound session's sink unload (sound.REMOVE_WORST_SEC, 30 s).
+# tests/mcp_check.py checks the sum.
+TERM_GRACE_SEC = 90
 INLINE_IMAGE_MAX_BYTES = 16 * 1024 * 1024
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
@@ -177,11 +178,12 @@ for _name, _heading in PROMPTS.items():
 # ---- sessions --------------------------------------------------------------------------------
 
 # Seconds a launch can spend BEFORE its readiness wait starts, plus a stop on failure: the
-# launch.lock wait (60 s), the bridge.lock wait (60 s), the scope start (10 s) and a stop (~55 s:
-# runner wait 25 s + scope stop 20 s + kill wait 10 s).
+# launch.lock wait (60 s), the bridge.lock wait (60 s), the scope start (10 s), a stop (~55 s:
+# runner wait 25 s + scope stop 20 s + kill wait 10 s), and for --sound the sink's creation and
+# checks (sound.LAUNCH_WORST_SEC, 50 s) and its unload (sound.REMOVE_WORST_SEC, 30 s).
 # Keep in step with launcher._LOCK_WAIT and bridge_install._LOCK_WAIT (tests/mcp_check.py
 # checks the sum). With a smaller margin a slow but healthy launch was cancelled by SIGTERM.
-LAUNCH_EXTRA_SEC = 60 + 60 + 10 + 55 + 40
+LAUNCH_EXTRA_SEC = 60 + 60 + 10 + 55 + 40 + 30 + 50
 
 
 @mcp.tool()
@@ -194,7 +196,7 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
            extra_args: list[str] | None = None, match: str | None = None,
            role: str | None = None, port: int | None = None, connect: str | None = None,
            game_name: str | None = None, closed: bool = False,
-           network: str = "private") -> str:
+           network: str = "private", sound: bool = False) -> str:
     """Start a game (or qtFRED) session on a private virtual display; returns its id once ready.
 
     Multiplayer: match_create first, then launch role="standalone" | "host" | "client" with
@@ -208,7 +210,9 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
     skip_movies, dismiss_popups, skip_command_briefing, skip_briefing (with mission = straight
     into gameplay). allow_eval enables lua/post_event. interactive drops -noninteractive (an
     engine Error() then waits on a dialog instead of ending the session). runtime is the hard
-    limit in seconds after which the session is killed (default 30 min). For qtFRED, open
+    limit in seconds after which the session is killed (default 30 min). sound=true plays the
+    game's audio into its own null sink (never the speakers; the result's sound.sink names it,
+    record <sink>.monitor); default -nosound. For qtFRED, open
     missions with fred_open (it works on a copy); launch refuses a qtFRED mission outside the
     harness's copy folder.
     """
@@ -222,7 +226,7 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
             f"--runtime={runtime}", f"--ready-timeout={ready_timeout}",
             *_opt("match", match), *_opt("role", role), *_opt("port", port),
             *_opt("connect", connect), *_opt("game-name", game_name), *_opt("closed", closed),
-            f"--network={network}"]
+            f"--network={network}", *_opt("sound", sound)]
     if extra_args:
         args += ["--", *extra_args]
     return _ctl(*args, timeout=ready_timeout + LAUNCH_EXTRA_SEC)

@@ -183,6 +183,39 @@ socket. Requirements: unprivileged user namespaces (some distributions restrict 
 unconfined programs, Ubuntu's AppArmor setting being one) and `ip` from iproute2; a launch that cannot make the network fails with the reason
 from engine.log and names the opt-out.
 
+### Sound
+
+Sessions are silent by default (`-nosound`). `launch --sound` (MCP `launch(sound=true)`, game
+sessions only) plays the game's audio into a null sink of its own on your PulseAudio/PipeWire
+server: a sink that outputs nowhere, so nothing reaches your speakers, and whose monitor a
+recorder can capture, one session's audio only. The launch result's `sound.sink` names it
+(`fsoh_<runtime-root tag>_<session id>`); record `<sink>.monitor`, e.g.
+`ffmpeg -f x11grab -i <display> -f pulse -i <sink>.monitor ...`.
+
+What keeps it off your speakers and microphone: FSO opens OpenAL devices by name, falling back to
+the defaults, so the harness writes the sink and its monitor into the session's prefs as the
+engine's playback and capture devices, and before starting the engine checks that the engine's
+own OpenAL lists both names (a miss refuses the launch). Its streams carry
+`node.dont-reconnect` and `node.dont-fallback`: if the sink disappears the engine goes silent
+rather than to the default output, and a stream naming a missing sink fails instead of starting
+on it. After the engine is up the launch checks that every stream of the engine is on its sink;
+a stream elsewhere, or none at all, stops the session and fails the launch. `stop` unloads the
+sink after the engine is gone; `cleanup` unloads this runtime root's sinks whose session is gone,
+leaves other roots' sinks alone, and keeps (and reports in `kept_sinks`) any whose monitor a
+recorder is still capturing. Stop a recorder BEFORE `stop`: PipeWire moves a capture whose source
+disappears onto the desktop's audio unless the recorder sets the same two properties
+(`PULSE_PROP="node.dont-reconnect=true node.dont-fallback=true"`; ffmpeg then needs a kill path,
+it can block and ignore SIGTERM). Needs `pactl` 16+ (pulseaudio-utils).
+
+Limits: the routing check runs once, at launch. If a named device is listed but cannot be
+opened, FSO still moves on to the next device, the default: for playback the launch's routing
+check catches that; for capture (FSO opens and closes it once at startup) nothing does, so the
+microphone could be opened for that moment.
+And the Pulse socket is a full client connection as your user: the engine could record any
+source or load server modules. It always could reach the socket by its absolute path (the
+private runtime folder prevents accidental use, not deliberate use); `--sound` hands it the
+address. Acceptable for a local test harness, not a sandbox.
+
 Limits of this version: one server (standalone or host) and one mission-carrying session per
 match; a host launched with `--mission` starts its mission at once, so a client cannot join it
 (a client cannot enter a mission in progress), which is why the recipe uses a standalone and gives

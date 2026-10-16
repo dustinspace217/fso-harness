@@ -22,6 +22,8 @@ fsoctl = ["bridge/**/*"]
 [tool.mutmut]
 # Mutation testing (workspace QA): mutate the package, run the unit tier.
 source_paths = ["fsoctl"]
-# Engine docs the unit tier reads as fixtures (tests/test_d_docs.py); mutmut copies only
-# source_paths and tests into mutants/ otherwise (mutmut 3.7 configuration.py: also_copy).
-also_copy = ["docs/research"]
+# Files the unit tier reads as fixtures (tests/test_d_docs.py, test_guide.py, test_examples.py);
+# mutmut copies only source_paths and tests into mutants/ otherwise (mutmut 3.7 configuration.py:
+# also_copy). Copies already in mutants/ can go stale: a baseline that fails on a doc or Lua file
+# means delete mutants/ and rerun (QA sound MU-8, 2026-10-15).
+also_copy = ["docs/research", "docs/AGENT-GUIDE.md", "examples"]

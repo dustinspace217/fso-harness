@@ -71,6 +71,17 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
   belongs to the host player, never the standalone; the bridge posts the join, start-game and
   sync-launch events for clients (spec `2026-10-12-fso-harness-multiplayer-design.md`,
   probe-results section 21).
+- **`--sound` never reaches the speakers or the mic** (fsoctl/sound.py, README "Sound"): a
+  per-session null sink `fsoh_<root tag>_<id>`, named as FSO's PlaybackDevice AND CaptureDevice
+  (its monitor) in the session prefs, because FSO opens OpenAL devices BY NAME and falls back to
+  the defaults (2026-10-15: the first --sound session opened the USB output; every one opened
+  and closed the desk mic). check_device_names refuses a launch whose OpenAL does not list both
+  names; streams carry node.dont-reconnect + node.dont-fallback (a gone or missing sink = silence,
+  never the default); verify_routing after ready fails CLOSED (no moves: dont-reconnect makes
+  them impossible). Sink load/unload under the user-wide sound_lock (NOT launch.lock: _abandon
+  calls stop under it); unload only after checking the index still names this session's sink
+  (PipeWire reuses a freed index at once). cleanup touches only its own root's sinks. Tests:
+  conftest stubs the sound server for EVERY test; only a `sound`-marked test may reach it.
 
 ## Build, test, lint
 - `pytest` (unit) · `bounded-run pytest -m engine -p no:xdist` · `-m qtfred` · `-m vulkan`

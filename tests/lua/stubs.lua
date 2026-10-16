@@ -75,12 +75,29 @@ function M.ship(name, extra)
 		Position = { x = 1, y = 2, z = 3 }, Orders = {}, Target = invalid(),
 		getfvec = function() return { x = 0, y = 0, z = 1 } end,
 		isDying = function() return false end,
+		getBreedName = function() return "Ship" end,
 		firePrimary = function() return 1 end,
 		fireSecondary = function() return 0 end,
 		fireCountermeasure = function() end,
 	})
 	for k, v in pairs(extra or {}) do s[k] = v end
 	return s
+end
+
+-- The dead player's object after the engine deleted its ship: still a valid handle, but retyped
+-- to OBJ_GHOST (object.cpp obj_delete; getBreedName gives Object_type_names "Ghost"). Only the
+-- generic object fields exist (a subset of them here), so a ship-only read (Name, HitpointsMax,
+-- Target, firePrimary) is fatal.
+function M.ghost()
+	local zero = { x = 0, y = 0, z = 0 }
+	return M.handle({
+		getBreedName = function() return "Ghost" end,
+		getSignature = function() return 1 end,
+		Position = zero, HitpointsLeft = 0,
+		Orientation = M.handle({ getFvec = function() return zero end }),
+		Physics = M.handle({ Velocity = zero, RotationalVelocity = zero,
+		                     RotationalVelocityMax = zero }),
+	})
 end
 
 -- An in-memory folder for one cf path type.

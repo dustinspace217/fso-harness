@@ -65,6 +65,11 @@ class Session:
     # ran on the real network; status shows null rather than a false "private", QA XFA-6).
     # A match session is always "private" (its match's). The runner reads this field.
     network: str | None = None
+    # launch --sound: the engine plays into its own null sink (fsoctl/sound.py); sound_module is
+    # that sink's module index on the user's Pulse server, used by stop and by a failed launch
+    # to unload it (cleanup finds leftover sinks by name instead).
+    sound: bool = False
+    sound_module: int | None = None
 
 
 def run_dir(sess: Session) -> Path:

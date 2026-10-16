@@ -424,6 +424,33 @@ test("pilot_reports_completed_and_why_it_stopped", function(W)
 	eq(r.stopped_because, "player_dead", "stopped_because")
 end)
 
+-- A dead player whose ship the engine has deleted is a valid object of breed "Ghost", not a
+-- ship: a state poll then read HitpointsMax off it and the engine aborted (Playing Judas batch,
+-- 2026-10-15). The stub ghost is strict, so any ship-only read fails these tests.
+test("state_with_a_ghost_player_reports_no_player", function(W)
+	W.player = stubs.ghost()
+	local H = boot(W)
+	local r = call(W, H, 1, "state", { ships = false })
+	eq(r.ok, true, "report ok")
+	eq(r.result.player, nil, "player is null")
+	eq(W.fatal, nil, "no ship-only read")
+end)
+
+test("pilot_refuses_and_stops_when_the_player_is_a_ghost", function(W)
+	local H = boot(W)
+	send(W, 1, "pilot", { seconds = 5, primary = true })   -- firePrimary is ship-only (QA TA-3)
+	frames(H, 1)
+	W.player = stubs.ghost()
+	frames(H, 1)
+	truthy(reply(W, 1), "a reply")
+	eq(reply(W, 1).result.stopped_because, "player_dead", "stopped_because")
+	local r = call(W, H, 2, "pilot", { seconds = 1 })
+	eq(r.ok, false, "refused")
+	eq(r.kind, "refused", "kind")
+	truthy(string.find(r.error, "no player ship", 1, true), "error text")
+	eq(W.fatal, nil, "no ship-only read")
+end)
+
 test("pilot_ends_at_a_frame_bound_when_mission_time_stops", function(W)
 	local H = boot(W)
 	send(W, 1, "pilot", { seconds = 1 })
@@ -948,6 +975,22 @@ test("telemetry_records_nothing_while_off", function(W)
 	local r = call(W, H, 1, "telemetry", { action = "read" }).result
 	eq(r.rows, 0, "read while off"); eq(r.on, false, "off"); eq(r.summary, nil, "no summary")
 	eq(heartbeat(W).telemetry_on, false, "heartbeat says off")
+end)
+
+-- The ghost case for telemetry (QA CR-1 / TA-1, found in review, not seen live): telem_record
+-- would read Target and HitpointsMax off a dead player's ghost, the same abort as the state report.
+test("telemetry_skips_a_ghost_player_and_stays_on", function(W)
+	local H = boot(W)
+	W.player = flyer("Alpha 1", 1)
+	call(W, H, 1, "telemetry", { action = "on" })
+	timed_frames(H, W, 3, 10, 1)
+	local rows = H.telem.n
+	truthy(rows > 0, "rows while alive")
+	W.player = stubs.ghost()
+	timed_frames(H, W, 3, 20, 1)
+	eq(H.telem.n, rows, "no rows for a ghost")
+	eq(H.telem.on, true, "still on")
+	eq(W.fatal, nil, "no ship-only read")
 end)
 
 test("telemetry_read_window_and_downsampling", function(W)

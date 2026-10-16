@@ -62,8 +62,8 @@ Mission modes (all optional `A1.cfg` fields; the drill has a matching exercise f
   Jinking is off during the run.
 - **Recon** (`scan = { "<ship>", ... }`): scan each in order. The engine scans a ship held
   within max(150 m, its radius + 100 m) with the nose within ~18 degrees for its scan time
-  (2 s by default), and restarts when either slips, so the pilot flies in and holds station
-  nose-on. Without `stealth` it fights first and scans when no target is left.
+  (2 s by default; 5 s for an ST Azrael transport): out of range the scan pauses, with the nose
+  off it restarts (playercontrol.cpp), so the pilot flies in and holds station nose-on. Without `stealth` it fights first and scans when no target is left.
 - **Stealth** (`stealth = true`, `avoid = { "<ship>", ... }`, `avoid_radius` 750 m): never
   engage, keep farther than `avoid_radius` from each listed ship, and scan. In FSPort's "Playing
   Judas" being seen is scripted, until the Lucifer arrives: within 486 m of a patrol fighter or
@@ -80,16 +80,33 @@ Mission modes (all optional `A1.cfg` fields; the drill has a matching exercise f
     seconds after `after` appears (and once the `first` ships are scanned, or after `max_delay`),
     wait at `at` facing `face` until `target` appears; with `hold_until` stay until the target is
     that close.
-  - `go_to = { ship, subsystem, within }`: fly into that point when the scan list is done
-    (lined up 400 m outside it first); `jump_out = true` then presses Enter Subspace every 2 s
-    while flying away.
+  - `go_to = { ship, subsystem, within, done_event }`: fly into that point when the scan list
+    is done (lined up 400 m outside it first), or until the mission event `done_event` is true;
+    `jump_out = true` then flees on engines (away from every hostile, never toward a hostile
+    warship) and presses Enter Subspace every 2 s, shields to full at the press that counts.
+    `jump_when_clear = true` (off by default) waits up to 25 s for no hostile fighter within
+    400 m first; in Playing Judas the tail never cleared and the jump did worse with it.
   - `idle_at = {x, y, z}`: where to wait when there is nothing to do; otherwise the pilot holds
     where the idle spell began, still keeping clear of the avoid list.
   - Diagnosis: `trace = "<ship>"` logs, once a second while scanning that ship, the range, the
     nearest avoided ship, and the controls finally sent after every override; any avoided ship
     inside `avoid_radius` is logged as a "close pass".
 - **ETS** (`ets`): `"weapons"` (the v2 default) moves energy from shields to guns and caps the
-  Myrmidon at 56 of 75 m/s; `"balanced"` leaves it as the ship starts.
+  Myrmidon at 56 of 75 m/s; `"balanced"` leaves it as the ship starts; `"shields"`; the jump
+  stage sets `"flee"` (about 7/4/1 engines/shields/weapons) and `"jump"` (all to shields).
+- **Flight habits from Dustin's review (2026-10-15)**, all on by default; set the field to
+  `false` for the old behaviour: `afterburner` (charge then drain on approaches, hops between
+  scan targets, dodges), `ab_hop`, `intercept_scan` (lead the target on far scan approaches),
+  `missile_budget` (stop launching once the missiles in flight would kill; none below
+  `missile_min_hull`, 0.3), `link_secondaries` (dual fire), `hard_leash` (never chase a fighter
+  out of the escort's reach), `headon_gate` (fire within the whole radius head-on),
+  `friendly_check` (hold fire with a friendly in the line), `jump_ets`, `flee_warships`,
+  `finish_close` (finish an almost-done scan before switching tiers). `headon_jink = true`
+  restores the head-on swerve.
+- **Scan-lock fixes (same night)**, on by default, `false` restores the old rule:
+  `relative_brake` (brake to the receding hull's speed minus 15 m/s instead of full reverse),
+  `relative_close` (the 300 m close-quarters cap allows the hull's own speed), `scan_hold_ring`
+  (mid-scan, only `avoid_radius` itself turns the nose away).
 
 `DR.set_skill(level)` sets the difficulty (0 Very Easy to 4 Insane) through the game option, and
 `DR.set_class(name)` swaps the player's ship class. `DR.queue_drills({...})` runs drills one after
@@ -248,3 +265,22 @@ the warp speed the engine waits for (PCM_WARPOUT_STAGE1, within 5%; playercontro
   lasers have a fixed life).
 - Difficulty is set with `DR.set_skill`; the early results tables above were flown on Easy, the
   mission-type results and Playing Judas on Medium. Enemy AI aim and turn rate scale with it.
+
+### After Dustin's flight review (same night, MediaVPs stack, silent batches, 2026-10-15)
+
+The review's habits (afterburner, energy for the jump, intercepts, missile budget, leash,
+head-on firing; switches listed above) first broke Playing Judas: 7 of 7 runs lost the Kali
+transports at t=171, with either the afterburner or the intercept on (both off: 1 win in 1).
+A once-a-second `trace` on the missed transport showed the cause was older code that the new
+habits' timing exposed: full reverse and the flat half-throttle cap beside a 62 m/s convoy took
+the pilot from 47 m to 208 m off it, past scan range, and the avoid warning ring then swung the
+nose off mid-scan (an ST Azrael needs 5 s unbroken). With the three scan-lock fixes:
+
+| Mission | Runs | Real wins (debriefing) | Notes |
+|---|---|---|---|
+| Playing Judas | 14 | 10 | every loss a death in the warp-out, Rama fighters 50-170 m behind; Kali done at t~119 (was 145, the wing jumps at ~170) |
+| Hammer and Anvil | 5 | 3 | 0 in 10 before the brake fixes, but those ran with 5-6 engines at once and these with 2-4 |
+
+A jump that waits for a clear tail (`jump_when_clear`) never got one in six tries, with or
+without the afterburner; it stays off. The afterburner hop first rammed Durga 1 at the same two
+moments in both runs that had it; the hop now stops 1000 m past the hold point instead of 600.

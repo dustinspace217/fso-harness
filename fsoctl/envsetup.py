@@ -16,8 +16,11 @@ that connect it to the user's desktop session (QA SA-2, SA-3, CR-2):
   DBUS_SESSION_BUS_ADDRESS was NOT enough: libdbus then connects to $XDG_RUNTIME_DIR/bus, and
   both programs showed up in `busctl --user list` (probe SA2-1, 2026-10-12). So the child gets a
   private XDG_RUNTIME_DIR inside its run folder and a bus address that never exists
-  (fix-wave-2 ruling R2). The game always runs with -nosound, so audio does not need the real
-  runtime folder. SDL_VIDEO_ALLOW_SCREENSAVER=1 is SDL's own switch for not inhibiting the
+  (fix-wave-2 ruling R2). Audio does not need the real runtime folder: the game runs with
+  -nosound unless launched with --sound, and then the runner adds PULSE_SERVER with the Pulse
+  socket's full path (fsoctl/sound.py), the only runtime path it is given. (Not a sandbox: the
+  real runtime folder stays reachable by absolute path; this prevents accidental use only.)
+  SDL_VIDEO_ALLOW_SCREENSAVER=1 is SDL's own switch for not inhibiting the
   screensaver.
 - SESSION_MANAGER / XAUTHORITY: SESSION_MANAGER is how X11 programs join the desktop's logout
   handshake (XSMP). XDG_CURRENT_DESKTOP / KDE_FULL_SESSION / DESKTOP_SESSION /

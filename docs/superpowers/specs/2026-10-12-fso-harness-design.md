@@ -50,7 +50,7 @@ agent (any MCP client)
   scope with MemoryMax/CPUQuota/TasksMax and a runtime limit (default 30 min).
 - Environment always set: DISPLAY, SDL_VIDEODRIVER=x11, GDK_BACKEND=x11, QT_QPA_PLATFORM=xcb, WAYLAND_DISPLAY unset,
   LIBGL_ALWAYS_SOFTWARE=1 for OpenGL, VK_ICD_FILENAMES only if the caller sets it (no vendor default), FSO flags
-  -window -res WxH -nosound -no_unfocused_pause -noninteractive (default; switchable) plus caller flags.
+  -window -res WxH -nosound -no_unfocused_pause -noninteractive (default; switchable) plus caller flags. (-nosound became switchable 2026-10-15: `launch --sound`, README "Sound".)
 - Renderer check after the window appears: report the graphics libraries from /proc/<pid>/maps and classify
   (mesa GL / NVIDIA Vulkan / other); `launch` fails loudly if Vulkan was requested and the engine fell back.
 - `stop` stops the scope (kills everything in it), keeps the run folder for inspection; `cleanup` removes run folders.

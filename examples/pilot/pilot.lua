@@ -90,7 +90,7 @@ end
 -- along the barrel and do NOT inherit the shooter's velocity (weapons.cpp:7401-7414; ai_profiles
 -- "$use additive weapon velocity" defaults to NO). v1 passed (target vel - own vel), which put the
 -- aim point own-speed x flight-time off: about 30 m at 500 m, more than a fighter's width.
-local function lead_point(tpos, rp, rv, spd)
+local function lead_point(tpos, rp, rv, spd, tmax)
 	local a = rv:getDotProduct(rv) - spd * spd
 	local b = 2 * rp:getDotProduct(rv)
 	local c = rp:getDotProduct(rp)
@@ -107,7 +107,7 @@ local function lead_point(tpos, rp, rv, spd)
 			t = -1
 		end
 	end
-	if not t or t <= 0 or t > 5 then t = rp:getMagnitude() / spd end
+	if not t or t <= 0 or t > (tmax or 5) then t = rp:getMagnitude() / spd end
 	return tpos + rv * t, t
 end
 
@@ -116,6 +116,11 @@ end
 -- the last steer_to of a frame is always the one whose heading/pitch are used, so its roll goes
 -- with them.
 local last_bank = 0
+-- Afterburner request for this frame: nil, "approach" (far from a target), "hop" (to a far
+-- scan target) or "dodge"; set by
+-- the branches of fly() and scan_frame, read once at the end of fly(). WHY an upvalue: the
+-- requests come from several branches and from scan_frame, which returns steering only.
+local ab_want = nil
 
 -- Damping gain on turn rate, as a fraction of the ship's max turn rate. The engine sets desired
 -- turn rate = stick x max turn rate per axis, in the ship's own frame (physics.cpp:497-539), and
@@ -399,7 +404,15 @@ local function threat(e, me, guards)
 	local hit_t = hitters[e:getSignature()]
 	local hitting = hit_t and mn.getMissionTime() - hit_t < 4
 	if hitting then dg = dg - A1.cfg.hitter_bonus end
-	if t_name ~= "Bomber" and not aimed and not hitting and dg > A1.cfg.leash then dg = dg + 5000 end
+	if t_name ~= "Bomber" and not aimed and not hitting and dg > A1.cfg.leash then
+		-- Out of the escort's reach entirely (Dustin's review of The Hammer and the Anvil,
+		-- 2026-10-15): with the local enemies dead, a fighter 5 km out was still the best of what
+		-- was left, so the pilot flew off to a fight it could not reach in time and left the
+		-- transports "sitting ducks". nil = not a target; the guard branch holds station instead.
+		-- A1.cfg.hard_leash = false restores the old penalty for comparisons.
+		if A1.cfg.hard_leash ~= false then return nil end
+		dg = dg + 5000
+	end
 	return dg + 0.5 * e.Position:getDistance(me.Position)
 end
 
@@ -577,9 +590,24 @@ local function armed_secondary_name(me)
 	end
 	return ""
 end
-local ets_presses = A1.ets_done and 0 or 2   -- ETS taps at the start (policy below); 0 on hot reload
 A1.cfg.ets = A1.cfg.ets or "weapons"
-local ETS_KEY = { weapons = "INCREASE_WEAPON", shields = "INCREASE_SHIELD" }   -- balanced: no taps
+-- The setup's policy, before the jump stage changes it (restored on a mission restart). Not
+-- remembered while the jump stage owns the setting (a reload in mid-jump keeps the old base).
+if A1.cfg.ets ~= "flee" and A1.cfg.ets ~= "jump" then A1.ets_base = A1.cfg.ets end
+-- ETS policies as the key taps a player makes from the default 4/4/4 (of 12). One tap raises the
+-- chosen system by 2 and takes 1 from each other, the higher first (hudets.cpp
+-- increase_recharge_rate), so "weapons to engines" is Engine, Shield, Engine: 7/4/1
+-- (engines/shields/weapons; traced by hand from that function, not read back in a game).
+-- Engine energy sets top speed (ets_update_max_speed); the warp-out
+-- speed is fixed, so "flee" buys distance before the jump and "jump" puts the energy into
+-- shields for the jump itself (Dustin's play, 2026-10-15).
+local W, S, E = "INCREASE_WEAPON", "INCREASE_SHIELD", "INCREASE_ENGINE"
+local ETS_SEQ = { weapons = { W, W }, shields = { S, S }, balanced = {}, flee = { E, S, E },
+	jump = { S, S, S, S } }
+-- Taps still to make (0 on hot reload). At least one step even for "balanced": the step that
+-- runs out records the policy as applied, which a later change of policy is compared against.
+local function ets_steps(policy) return math.max(#(ETS_SEQ[policy] or {}), 1) end
+local ets_presses = A1.ets_done and 0 or ets_steps(A1.cfg.ets)
 
 -- ---------------------------------------------------------------- v2-defence: jink
 -- The AI's lead builds up over the time a target stays in its sights (about 2 s plus a skill
@@ -618,16 +646,20 @@ local function reset_after_restart()
 	lock_time, cur_target_name, target_since, missile_check, last_sname = 0, nil, -100, nil, nil
 	-- Flight-quality counters restart too, or a per-run frame rate spans two missions (QA XFK-1).
 	A1.fq = { track = 0, on = 0, avoids = 0, extends = 0, frames = 0, t0 = mn.getMissionTime() }
-	ets_presses = 2                       -- the new ship starts at default ETS
-	A1.ets_done, A1.ets_applied = nil, nil
-	A1.link_t, A1.link_tries = nil, nil
+	A1.ets_done, A1.ets_applied = nil, nil   -- the new ship starts at default ETS (taps set below)
+	A1.link_t, A1.link_tries, A1.link2_t, A1.link2_tries, A1.ab_burning = nil, nil, nil, nil, false
+	-- The jump stage switches the ETS policy to "flee"/"jump"; a new mission starts from the
+	-- policy the setup chose.
+	A1.cfg.ets = A1.ets_base or A1.cfg.ets
+	ets_presses = ets_steps(A1.cfg.ets)
 	trk.h = nil
 	wing_order.sig, wing_order.n, wing_order.step, wing_order.check, wing_order.hold = nil, 0, nil, nil, nil
 	acc_est.sig = nil
 	gun_seen = {}
 	A1.avoid, A1.extend, A1.contact, A1.escaping, A1.scan_sig = nil, nil, nil, false, nil
 	A1.reached, A1.jump_t, A1.goal_sig, A1.goal_entry_done = nil, nil, nil, nil
-	A1.amb_t, A1.amb_done, A1.amb_noted, A1.brake_till = nil, nil, nil, nil
+	A1.warp_avail_t, A1.tail_note_t, A1.tail_wait, A1.jumping = nil, nil, nil, nil
+	A1.amb_t, A1.amb_done, A1.amb_noted, A1.brake_till, A1.brake_ref = nil, nil, nil, nil, nil
 	A1.scanned, A1.scan_group, A1.close_t, A1.idle_p = {}, nil, nil, nil
 	A1.spare_seen, A1.spare_sig, A1.spare_step, A1.spare_menu, A1.spare_t, A1.spare_released = nil, nil, nil, nil, nil, nil
 	jink.till, jink.ready, jink.dir = -1, -1, nil
@@ -640,27 +672,59 @@ A1.press = A1.press or {}    -- queue of one-shot control names the operator wan
 -- Retail Rockeye and Stiletto II are "+Type: HEAT" (weapons.tbl): no lock needed, the seeker
 -- homes on our target at launch (weapons.cpp:7013-7019). Lua cannot read the homing type, so they
 -- are listed by class name in A1.cfg.heat. The rules, each from a measured failure (2026-10-15):
---   * one missile in flight per target: a 1.5 s spacing fired 48 Rockeyes for 7 hits (SM1-01);
+--   * a launch budget per target: a 1.5 s spacing with no cap fired 48 Rockeyes for 7 hits
+--     (SM1-01), so v2 allowed one missile in flight; since 2026-10-15 missile_budget_ok caps the
+--     missiles in flight at the number that kills, which lets a quick second follow the first;
 --   * against fighters that turn at least as fast as we do: tail shots only (nearly ahead, flying
 --     away, 200-700 m); 20 degrees at 200-1200 m fired 23 Rockeyes for 2 hits at SF Dragons.
 --     Our own yaw rate is the yardstick because a target we can out-turn is one we can stay
 --     behind; the missile's own turn rate is not readable here;
 --   * against bombers and slower-turning ships: 20 degrees, 200-1200 m (SM1-01: 5 fired, 5 hit).
-local function heat_launch_ok(me, tgt, ang, away, dist, now)
-	local tsig, msig = tgt:getSignature(), me:getSignature()
+-- Our missiles already homing on `tgt`.
+local function missiles_on(me, tgt)
+	local tsig, msig, n = tgt:getSignature(), me:getSignature(), 0
 	for i = 1, #mn.Weapons do
 		local w = mn.Weapons[i]
 		if w:isValid() and w.Class:isMissile() and w.Parent:isValid() and w.Parent:getSignature() == msig then
 			local ho = w.HomingObject
-			if ho and ho:isValid() and ho:getSignature() == tsig then return false end
+			if ho and ho:isValid() and ho:getSignature() == tsig then n = n + 1 end
 		end
 	end
+	return n
+end
+
+-- Missile economy (Dustin's review of The Hammer and the Anvil, 2026-10-15): "Two heatseekers in
+-- quick succession is usually enough to destroy most fighters, and you sometimes spend three or
+-- four because you keep firing until the ship is destroyed rather than until the missile that
+-- *would* destroy it has been launched. Also, you often fire a missile that hits a target when
+-- it's almost dead from your laser fire anyway." So: no missile at a target below
+-- A1.cfg.missile_min_hull of its hull (the lasers finish it), and none once the missiles already
+-- on their way would kill it: the facing shield quadrant first, then the hull, each at that
+-- warhead's shield and armor factors (weapons.tbl; one quadrant, as a missile hits only one).
+-- A1.cfg.missile_budget = false restores fire-until-dead for comparisons.
+A1.cfg.missile_min_hull = A1.cfg.missile_min_hull or 0.3
+local function missile_budget_ok(me, tgt, cls)
+	if A1.cfg.missile_budget == false then return true end
+	local hull = tgt.HitpointsLeft
+	if hull < A1.cfg.missile_min_hull * math.max(tgt.HitpointsMax, 1) then return false end
+	local dmg = math.max(cls.Damage, 1)
+	local quad = (tgt.Shields and tgt.Shields:isValid()) and tgt.Shields.CombinedLeft / 4 or 0
+	local need = quad / (dmg * math.max(cls.ShieldFactor, 0.05)) + hull / (dmg * math.max(cls.ArmorFactor, 0.05))
+	return missiles_on(me, tgt) < need
+end
+
+local function heat_launch_ok(me, tgt, ang, away, dist, now)
+	-- One volley in flight at a time unless the budget asks for more (then a quick second, as a
+	-- player fires two in succession; the budget above decides whether more is needed at all).
+	local follow = A1.cfg.missile_budget ~= false
+	if not follow and missiles_on(me, tgt) > 0 then return false end
 	local agile = tgt.Class.Type:isValid() and tgt.Class.Type.Name ~= "Bomber"
 		and tgt.Physics.RotationalVelocityMax.y >= me.Physics.RotationalVelocityMax.y
 	if agile then
-		return ang < math.rad(10) and away > 0.7 and dist > 200 and dist < 700 and now - last_sec > 3
+		return ang < math.rad(10) and away > 0.7 and dist > 200 and dist < 700
+			and now - last_sec > (follow and 0.6 or 3)
 	end
-	return ang < math.rad(20) and dist > 200 and dist < 1200 and now - last_sec > 1.5
+	return ang < math.rad(20) and dist > 200 and dist < 1200 and now - last_sec > (follow and 0.6 or 1.5)
 end
 
 -- ---------------------------------------------------------------- strike mode
@@ -824,7 +888,31 @@ local function next_scan(me)
 		end
 		return best
 	end
-	for _, tier in ipairs(A1.cfg.scan_tiers or { A1.cfg.scan_first or {} }) do
+	-- Finish what is close: the ship being scanned stays the target while it is within its scan
+	-- range + 200 m, even when a higher tier shows up, unless the first tier (the ship that
+	-- leaves soonest, Playing Judas: the Eva) is present. The pilot flew 60 s toward Cargo 4,
+	-- then dropped it 2 km out when the Kali arrived and came back for it later, racing back and
+	-- forth (Dustin's review, 2026-10-15: "underweighting proximity to target").
+	-- A1.cfg.finish_close = false restores strict tier order.
+	local tiers = A1.cfg.scan_tiers or { A1.cfg.scan_first or {} }
+	if A1.cfg.finish_close ~= false and A1.scan_sig and not nearest(tiers[1] or {}) then
+		for _, tier in ipairs(tiers) do
+			for _, name in ipairs(tier) do
+				local s = live_ship(name)
+				if s and s:getSignature() == A1.scan_sig and not s:getFlag("cargo-known")
+						and s.Position:getDistance(me.Position) - s.Radius
+							< math.max(150, s.Radius + 100) + 200 then
+					A1.scan_group = {}
+					for _, n in ipairs(tier) do
+						local o = live_ship(n)
+						if o then A1.scan_group[o:getSignature()] = true end
+					end
+					return s
+				end
+			end
+		end
+	end
+	for _, tier in ipairs(tiers) do
 		local s = nearest(tier)
 		if s then
 			-- The rest of this tier (a convoy) is flown among at matched speed: the hull check
@@ -903,7 +991,15 @@ local function scan_frame(me, tgt)
 	local h, p, ang
 	local maxv = math.max(me.Physics.VelocityMax.z, 1)
 	local throttle
-	if closest < A1.cfg.avoid_radius + 150 then
+	-- Mid-scan (in range, nose within ~30 degrees of the target) the 150 m warning ring alone
+	-- does not turn us away: turning resets the scan, and an avoid-list ship hovering at
+	-- 850-900 m flipped the pilot between avoiding and scanning until the Kali wing jumped out
+	-- (Playing Judas trace, 2026-10-15). Inside avoid_radius itself (750 m, above every
+	-- detection distance in the mission) the avoidance still wins. A1.cfg.scan_hold_ring = false
+	-- restores the old rule.
+	local mid_scan = A1.cfg.scan_hold_ring ~= false and d < scan_dist
+		and me.Orientation:getFvec():getDotProduct((tgt.Position - me.Position):getNormalized()) > 0.87
+	if closest < A1.cfg.avoid_radius + 150 and not (mid_scan and closest > A1.cfg.avoid_radius) then
 		-- Inside the warning ring of a ship we must avoid: steer by the avoidance field only.
 		h, p = steer_to(me, me.Position + dir * 600, 3.0)
 		throttle = 1.0
@@ -915,8 +1011,26 @@ local function scan_frame(me, tgt)
 		-- a fixed 0.6 throttle earlier arrived at ~70 m/s (recon drill).
 		local los = (tgt.Position - me.Position):getNormalized()
 		if d > hold + 400 then
-			h, p = steer_to(me, me.Position + dir * 600, 3.0)
+			-- Far out: fly to where the target WILL be, not where it is (Dustin's review,
+			-- 2026-10-15: heading straight at a far target made falling in behind it take longer).
+			-- A1.cfg.intercept_scan = false keeps the old pursuit course for comparisons.
+			local goal = tgt.Position
+			if A1.cfg.intercept_scan ~= false and tgt.Physics.Velocity:getMagnitude() > 5 then
+				goal = lead_point(tgt.Position, tgt.Position - me.Position, tgt.Physics.Velocity, maxv, 120)
+			end
+			h, p = steer_to(me, me.Position + avoid_dir(me, goal) * 600, 3.0)
 			throttle = 1.0
+			-- Afterburner hop: beyond 1000 m past the hold point, burn from a 40% tank ("hop")
+			-- instead of waiting for a full one, to close on the next transport (Dustin's review,
+			-- 2026-10-15). A1.cfg.ab_hop = false restores the old rule: past 1500 m, full tank.
+			-- 1000 m, not 600: hopping to 600 m past the hold rammed Durga 1 at the same two moments
+			-- in both runs that had it, and neither run without hops did (Playing Judas A/B,
+			-- 2026-10-15); the extra 400 m is braking room.
+			if A1.cfg.ab_hop ~= false then
+				if d > hold + 1000 then ab_want = "hop" end
+			elseif d > 1500 then
+				ab_want = "approach"
+			end
 		else
 			-- Formation flying on a station `hold` metres off the target's box, on our side of it:
 			-- wanted velocity = the target's velocity + 0.25/s x the offset to the station (capped
@@ -961,9 +1075,15 @@ local function scan_frame(me, tgt)
 			local om = off:getMagnitude()
 			local corr = (om > 1) and off * (math.min(0.25 * om, 40) / om) or ba.createVector(0, 0, 0)
 			local want = tgt.Physics.Velocity + corr
-			-- Inside scan range the nose stays on the target whatever the station error: any turn
-			-- away restarts the scan timer, and the Lucifer's scan takes 20 s (ScanTime 20000 ms).
-			if om > 80 and d > scan_dist - 40 then
+			-- Inside scan range the nose stays on the target whatever the station error: in range,
+			-- the nose more than ~18 degrees off resets the scan to zero; out of range it only
+			-- pauses, whatever the nose does (playercontrol.cpp:1771-1822, CARGO_MIN_DOT_TO_REVEAL
+			-- 0.95), and the Lucifer's scan takes 20 s (ScanTime 20000 ms). So the nose comes onto
+			-- the target 40 m BEFORE the range edge. Until 2026-10-15 this read scan_dist - 40,
+			-- which let the nose follow the station error while up to 40 m inside range, a reset
+			-- zone (found from Dustin's review: "the intercept course held too strongly could be
+			-- leading to you breaking scan lock").
+			if om > 80 and d > scan_dist + 40 then
 				h, p = steer_to(me, me.Position + want:getNormalized() * 600, A1.cfg.gain)
 			else
 				h, p, ang = steer_to(me, tgt.Position, A1.cfg.gain, true)
@@ -1077,10 +1197,72 @@ local function away_from_hostiles(me)
 	return (me.Position - best.Position):getNormalized()
 end
 
+-- Direction to run while waiting for the warp drive: away from every hostile, fighters (within
+-- 2.5 km) and warships (within 6 km, weighted heavier: their turrets are what reaches us at
+-- range), and never toward a hostile warship. Dustin's review of the Playing Judas recording
+-- (2026-10-15): fleeing only the nearest fighter turned the pilot back toward the Lucifer
+-- without using it as cover; "either fly away from the warships while weaving, or else dance
+-- around the warships".
+-- This is the first of the two. Returns a unit vector (our nose when nothing hostile is near).
+local function flee_dir(me)
+	local v = ba.createVector(0, 0, 0)
+	local caps = {}
+	for i = 1, #mn.Ships do
+		local s = mn.Ships[i]
+		if s:isValid() and not s:isDying() and s.Team:attacks(me.Team) then
+			local rel = me.Position - s.Position
+			local d = math.max(rel:getMagnitude(), 1)
+			if is_small(s) then
+				if d < 2500 then v = v + rel / d * (1000 / math.max(d, 100)) end
+			elseif d < 6000 + s.Radius then
+				v = v + rel / d * (3000 / math.max(d - s.Radius, 200))
+				caps[#caps + 1] = s
+			end
+		end
+	end
+	if v:getMagnitude() < 1e-3 then return me.Orientation:getFvec() end
+	local dir = v:getNormalized()
+	-- Remove any component toward a hostile warship (bounded: one pass per warship).
+	for _, c in ipairs(caps) do
+		local toward = (c.Position - me.Position):getNormalized()
+		local k = dir:getDotProduct(toward)
+		if k > 0 then
+			local rest = dir - toward * k
+			if rest:getMagnitude() > 1e-3 then dir = rest:getNormalized() else dir = toward * -1 end
+		end
+	end
+	return dir
+end
+
+-- Would a bolt fired now at `aim` (adist m away) pass near a ship that is not hostile, before it
+-- reaches the target? Friendly ships within their radius + 30 m of the line, guarded ships within
+-- radius + 80 m ("essentially zero chance of hitting escort subjects", Dustin's review,
+-- 2026-10-15). Returns that ship or nil.
+local function friendly_in_line(me, tgt, aim, adist, guards)
+	local dir = (aim - me.Position) / math.max(adist, 1)
+	local gset = {}
+	for _, g in ipairs(guards) do gset[g:getSignature()] = true end
+	local tsig, msig = tgt:getSignature(), me:getSignature()
+	for i = 1, #mn.Ships do
+		local s = mn.Ships[i]
+		if s:isValid() and s:getSignature() ~= tsig and s:getSignature() ~= msig and not s.Team:attacks(me.Team) then
+			local rel = s.Position - me.Position
+			local along = rel:getDotProduct(dir)
+			if along > 0 and along < adist + s.Radius then
+				local off = (rel - dir * along):getMagnitude()
+				if off < s.Radius + (gset[s:getSignature()] and 80 or 30) then return s end
+			end
+		end
+	end
+	return nil
+end
+
 -- One frame of flying. Wrapped in pcall by the hook below; any error hands control back.
 local function fly()
 	local me = hv.Player
-	if not (me and me:isValid()) then return end
+	-- A dead player's object outlives its ship as a valid "Ghost" with no Name (object.cpp
+	-- obj_delete); reading Name off it aborts the engine.
+	if not (me and me:isValid()) or me:getBreedName() ~= "Ship" then return end
 	me = mn.Ships[me.Name]              -- the ship-derived handle (Target, banks, firePrimary)
 	if not (me and me:isValid()) or me:isDying() then return end
 
@@ -1090,6 +1272,8 @@ local function fly()
 	last_t = now
 	if dt <= 0 then return end          -- paused or the same frame twice
 	A1.fq.frames = A1.fq.frames + 1       -- frame-rate control variable for tuning comparisons
+	ab_want = nil
+	local ab_never = false              -- set by the jump stage once the drive can jump
 
 	ba.setControlMode(FLIGHT_CONTROL_LUA_FULL)
 	ba.setButtonControlMode(BUTTON_CONTROL_LUA_ADDITIVE)
@@ -1098,7 +1282,7 @@ local function fly()
 
 	-- Queued one-shot presses (operator requests like END_MISSION) and the opening ETS taps,
 	-- at most one control per frame, the way a hand presses one key at a time.
-	if A1.link_cls ~= me.Class.Name then A1.link_cls, A1.link_tries = me.Class.Name, 0 end   -- a new ship class starts unlinked
+	if A1.link_cls ~= me.Class.Name then A1.link_cls, A1.link_tries, A1.link2_tries = me.Class.Name, 0, 0 end   -- a new ship class starts unlinked
 	if #A1.press > 0 then
 		local name = table.remove(A1.press, 1)
 		ci.useButtonControl(-1, name)
@@ -1113,6 +1297,14 @@ local function fly()
 		ci.useButtonControl(-1, "CYCLE_NEXT_PRIMARY")
 		A1.link_t, A1.link_tries = now, (A1.link_tries or 0) + 1
 		if me.PrimaryBanks.Linked == false and A1.link_tries == 1 then note("linking primary banks") end
+	elseif A1.cfg.link_secondaries ~= false and #me.SecondaryBanks >= 1 and not me.SecondaryBanks.DualFire
+			and now > 1.5 and now - (A1.link2_t or -100) > 0.3 and (A1.link2_tries or 0) < 2 then
+		-- Link-fire the missiles (Dustin's review, 2026-10-15: "Lastly, you can link-fire your
+		-- missiles."): Cycle Secondary Weapon Firing Rate (Shift+/) toggles dual fire. Two tries at most: a
+		-- warhead marked "no dual fire" ignores the key.
+		ci.useButtonControl(-1, "CYCLE_NUM_MISSLES")
+		A1.link2_t, A1.link2_tries = now, (A1.link2_tries or 0) + 1
+		if A1.link2_tries == 1 then note("linking secondary banks (dual fire)") end
 	elseif A1.cfg.link_primaries == false and #me.PrimaryBanks >= 2 and me.PrimaryBanks.Linked
 			and now - (A1.link_t or -100) > 0.3 then
 		-- Comparisons only: one press takes linked back to bank 1 (ship_select_next_primary).
@@ -1124,11 +1316,12 @@ local function fly()
 		-- (Alt-D), then the taps for the new policy on the following frames.
 		ci.useButtonControl(-1, "ETS_EQUALIZE")
 		note("ETS: equalize for " .. tostring(A1.cfg.ets))
-		A1.ets_applied, ets_presses = A1.cfg.ets, 2
+		A1.ets_applied, ets_presses = A1.cfg.ets, ets_steps(A1.cfg.ets)
 	elseif ets_presses > 0 and now > 2 then
-		-- ETS policy (A1.cfg.ets): "weapons" taps energy from shields to guns (v1/v2 default,
-		-- 4/4/4 -> 2/2/8); "shields" the reverse; "balanced" leaves the default 4/4/4.
-		local key = ETS_KEY[A1.cfg.ets]
+		-- ETS policy (A1.cfg.ets, see ETS_SEQ): "weapons" (v1/v2 default, 4/4/4 -> 2/2/8 guns),
+		-- "shields", "balanced" (no taps), "flee" and "jump" (set by the jump-out stage).
+		local seq = ETS_SEQ[A1.cfg.ets] or {}
+		local key = seq[#seq - ets_presses + 1]
 		if key then
 			ci.useButtonControl(-1, key)
 			note("ETS: " .. key)
@@ -1290,9 +1483,10 @@ local function fly()
 	-- 1. Choose a target (with hysteresis so we do not flip-flop between two close threats).
 	local best, best_score, cur, cur_score = nil, 1e12, nil, 1e12
 	for _, e in ipairs(enemies(me)) do
-		local sc = (#guards > 0) and threat(e, me, guards) or e.Position:getDistance(me.Position)
-		if sc < best_score then best, best_score = e, sc end
-		if e.Name == cur_target_name then cur, cur_score = e, sc end
+		local sc
+		if #guards > 0 then sc = threat(e, me, guards) else sc = e.Position:getDistance(me.Position) end
+		if sc and sc < best_score then best, best_score = e, sc end
+		if sc and e.Name == cur_target_name then cur, cur_score = e, sc end
 	end
 	-- Commitment: kill credit goes to whoever does the most damage, and test flight 3 spread its
 	-- hits across Aquarius 1/2/3 by switching every 1-3 s (0 kills, 3 assists). Keep a target
@@ -1424,12 +1618,24 @@ local function fly()
 		-- out of the Lucifer's fighter bay); fleeing "away from hostiles" alone defaulted to our
 		-- nose, which pointed at the bay, and the pilot died there (most likely to the six
 		-- Manticores; not confirmed).
-		-- Energy to shields for the run (a player's F5/F6/F7 move): the escape is a chase by six
-		-- fighters for the ~30 s until the warp drive returns, and the guns are not the plan.
-		if A1.cfg.ets ~= "shields" then A1.cfg.ets = "shields" end
-		local flee = away_from_hostiles(me)
-		local from = A1.cfg.go_to and live_ship(A1.cfg.go_to.ship)
-		if from then flee = (flee + (me.Position - from.Position):getNormalized() * 1.5):getNormalized() end
+		-- Energy (Dustin's play, 2026-10-15): weapons to engines while running for distance, then
+		-- shields at the jump itself, set when Alt-J is pressed below. The warp-out speed is fixed,
+		-- so engines only help before the jump. A1.cfg.jump_ets = false keeps the old single
+		-- switch to "shields" for comparisons.
+		if A1.cfg.jump_ets == false then
+			if A1.cfg.ets ~= "shields" then A1.cfg.ets = "shields" end
+		elseif A1.cfg.ets ~= "flee" and A1.cfg.ets ~= "jump" then
+			A1.cfg.ets = "flee"
+		end
+		local flee
+		if A1.cfg.flee_warships == false then
+			-- The old rule, kept for comparisons: away from the nearest fighter and the ship visited.
+			flee = away_from_hostiles(me)
+			local from = A1.cfg.go_to and live_ship(A1.cfg.go_to.ship)
+			if from then flee = (flee + (me.Position - from.Position):getNormalized() * 1.5):getNormalized() end
+		else
+			flee = flee_dir(me)
+		end
 		heading, pitch = steer_to(me, me.Position + flee * 1000, 3.0)
 		throttle = 1.0
 		-- Afterburner while fleeing, as a player holds Tab: the pursuers launch from the bay we
@@ -1440,10 +1646,15 @@ local function fly()
 		-- speed is within 5% of the warp speed (playercontrol.cpp:1150-1200, PCM_WARPOUT_STAGE1),
 		-- and the afterburner held it above that, so the jump never completed (The Hammer and the
 		-- Anvil, attempt B3: six minutes of "Subspace drive engaged").
-		if not me:canWarp() and me.AfterburnerFuelLeft > 0.1 * me.AfterburnerFuelMax then
+		-- Also while the jump waits on a tail (A1.tail_wait, set below): Rama (81-89 m/s) outran
+		-- the pilot on engines alone and stayed within 400 m for the whole 25 s wait (Playing
+		-- Judas, 2026-10-15). Off again on the first frame with no tail, before Alt-J.
+		local burn = not me:canWarp() or (A1.tail_wait and A1.cfg.tail_burn ~= false)
+		if burn and me.AfterburnerFuelLeft > 0.1 * me.AfterburnerFuelMax then
 			me.Physics.AfterburnerActive = true
 			A1.ab_frame = now
 		end
+		ab_never = not burn
 		-- Jump only into clear space, as a player points at empty space before Alt-J: once the
 		-- drive engages the engine flies the ship straight ahead and fast, and with six Manticores
 		-- within 200 m one of them rammed or shot the pilot in the jump, 79% to 1% hull in a
@@ -1468,9 +1679,46 @@ local function fly()
 		-- after the convoy left (The Hammer and the Anvil, recorded attempt B3). While the drive is
 		-- out (canWarp false; Playing Judas breaks it until Rama arrives) keep trying every 2 s.
 		local wait = me:canWarp() and 15 or 2
-		if not blocker and now - (A1.jump_t or -100) > wait then
+		-- Shake the tail first (Dustin, 2026-10-15: engines to gain distance, shields "at the last
+		-- possible second"). Once Alt-J is accepted the engine zeroes our controls for the whole
+		-- warp-out (at least 3 s, playercontrol.cpp PCM_WARPOUT_STAGE1-3), and two runs died in it
+		-- with Rama fighters 50-170 m behind, pressed the moment the drive came back (Playing
+		-- Judas, 2026-10-15). So while a hostile fighter (or one targeting us) is within 400 m,
+		-- keep fleeing (afterburner too); jump when clear, or after 25 s of warp being available
+		-- whatever the tail. OFF by default (A1.cfg.jump_when_clear = true turns it on): the tail
+		-- never cleared in any of six tries, Rama outruns the pilot even on the afterburner, and
+		-- the jump survived 3 of 6 with the wait vs 7 of 9 without (Playing Judas, 2026-10-15).
+		local tail
+		-- Not after Alt-J has been accepted (A1.jumping): a tail found then would turn the
+		-- afterburner back on mid-warp, which stalled the jump before (Hammer attempt B3).
+		if me:canWarp() and A1.cfg.jump_when_clear == true and not A1.jumping then
+			A1.warp_avail_t = A1.warp_avail_t or now
+			if now - A1.warp_avail_t < 25 then
+				for i = 1, #mn.Ships do
+					local o = mn.Ships[i]
+					if o:isValid() and is_small(o) and not o:isDying() and o:getSignature() ~= me:getSignature()
+							and o.Position:getDistance(me.Position) < 400 then
+						local t = o.Target
+						if o.Team:attacks(me.Team) or (t and t:isValid() and t:getSignature() == me:getSignature()) then
+							tail = o
+							break
+						end
+					end
+				end
+			end
+			A1.tail_wait = tail ~= nil
+			if tail and now - (A1.tail_note_t or -100) > 2 then
+				A1.tail_note_t = now
+				note(string.format("jump waits: %s on our tail (%.0f m)", tail.Name, tail.Position:getDistance(me.Position)))
+			end
+		end
+		if not blocker and not tail and now - (A1.jump_t or -100) > wait then
 			A1.jump_t = now
 			A1.press[#A1.press + 1] = "END_MISSION"
+			-- The last moment: once the drive engages the engine flies the ship straight, so
+			-- shields are all that stands between it and the pursuers (Dustin, 2026-10-15).
+			if me:canWarp() and A1.cfg.jump_ets ~= false then A1.cfg.ets = "jump" end
+			if me:canWarp() then A1.jumping, A1.tail_wait = true, false end
 		end
 	elseif goal_p then
 		-- 2g. Go to the mission's point (docking bay). Same arrival speed rule as a scan hold.
@@ -1491,7 +1739,13 @@ local function fly()
 		throttle = clamp((goal_s.Physics.Velocity:getDotProduct(los) + close) / maxv, 0, 1)
 		-- Only the real point counts; the lining-up point outside it is a waypoint (the first
 		-- version flagged that as "reached" and jumped out 400 m short, Playing Judas run 6).
-		if d < within and not goal_staging then
+		-- A1.cfg.go_to.done_event: the mission event that completes the visit. Playing Judas marks
+		-- "Enter docking bay" within 200 m, which also launches Rama wing out of that bay; flying
+		-- on to `within` after it kept the pilot heading at the Lucifer with Rama out (Dustin's
+		-- review, 2026-10-15).
+		local ev = A1.cfg.go_to.done_event
+		local done = ev and mn.evaluateSEXP("( is-event-true-delay !" .. ev .. "! 0 )")
+		if (d < within and not goal_staging) or done then
 			A1.reached = true
 			note(string.format("reached %s%s (%.0f m)", A1.cfg.go_to.ship, A1.cfg.go_to.subsystem and (" " .. A1.cfg.go_to.subsystem) or "", d))
 		end
@@ -1614,6 +1868,7 @@ local function fly()
 		local away = (tspd > 1) and tvel:getDotProduct(rp) / (tspd * math.max(dist, 1)) or 0
 		if dist > 700 then
 			throttle = 1.0
+			if dist > 1200 then ab_want = "approach" end
 		elseif ang < math.rad(30) and away > 0.3 then
 			throttle = clamp((tspd + 0.4 * (dist - 250)) / maxv, 0.15, 1.0)
 		elseif ang > math.rad(60) then
@@ -1644,8 +1899,23 @@ local function fly()
 		-- ~10 m fighter. NOTE for comparisons: this gate also decides how many shots are fired,
 		-- so part of v2's higher hit percentage is firing more selectively, not only aiming better.
 		local adist = (aim - me.Position):getMagnitude()
-		local cone = math.atan((tgt.Radius * 0.6) / math.max(adist, 1))
-		if ang < cone and adist < range * 0.95 then
+		-- Head-on (its nose on us, closing): fire at a predicted miss within its whole radius, not
+		-- 60% of it (Dustin's review of The Hammer and the Anvil, 2026-10-15: "You took a lot of
+		-- damage from the first wave of Basilisks on the first head-to-head, and dealt none in
+		-- return"). The closing speed shortens the bolt's flight and the target fills more of the
+		-- sights each frame, and the pass is short. Chases keep the tight gate, which is where v2's
+		-- hit rate came from. A1.cfg.headon_gate = false keeps 0.6 everywhere for comparisons.
+		local headon = A1.cfg.headon_gate ~= false and dist > 1
+			and tgt.Orientation:getFvec():getDotProduct((me.Position - tgt.Position) / dist) > 0.9
+			and tgt.Physics.Velocity:getDotProduct(me.Position - tgt.Position) > 0
+		local cone = math.atan((tgt.Radius * (headon and 1.0 or 0.6)) / math.max(adist, 1))
+		local blocked = (ang < cone and adist < range * 0.95 and A1.cfg.friendly_check ~= false)
+			and friendly_in_line(me, tgt, aim, adist, guards)
+		if blocked and now - (A1.ff_note_t or -100) > 3 then
+			A1.ff_note_t = now
+			note("holding fire: " .. blocked.Name .. " in the line")
+		end
+		if ang < cone and adist < range * 0.95 and not blocked then
 			-- firePrimary returns the bolts actually fired (0 while the weapon cycles): count those,
 			-- not trigger pulls, so the stat does not change with frame rate (QA XFA-6).
 			A1.stats.primary_shots = A1.stats.primary_shots + (me:firePrimary() or 0)
@@ -1666,6 +1936,8 @@ local function fly()
 			if ang < math.rad(12) and dist < asp.range then lock_time = lock_time + dt else lock_time = math.max(0, lock_time - 2 * dt) end
 			launch = lock_time > asp.lock and now - last_sec > 1.5 and dist > 150
 		end
+		local cls = armed_secondary(me)
+		if launch and cls and not missile_budget_ok(me, tgt, cls) then launch = false end
 		if launch then
 			local n = me:fireSecondary()
 			last_sec = now
@@ -1777,7 +2049,13 @@ local function fly()
 			-- Insane AI keeps its nose on us almost all the time (2026-10-15).
 			local on_it = tgt and th:getSignature() == tgt:getSignature()
 				and A1.dbg and A1.dbg.ang and A1.dbg.ang < 8
-			if not on_it then
+			-- Head-on with the threat (it is within 20 degrees of our nose): trade fire, do not
+			-- swerve off the line our guns are on (Dustin's review, 2026-10-15; the first head-on
+			-- with the Basilisks dealt no damage). A1.cfg.headon_jink = true restores the swerve.
+			local rel = th.Position - me.Position
+			local ahead = A1.cfg.headon_jink ~= true and rel:getMagnitude() > 1
+				and me.Orientation:getFvec():getDotProduct(rel:getNormalized()) > math.cos(math.rad(20))
+			if not on_it and not ahead then
 				local o = me.Orientation
 				local side = (math.random() < 0.5) and o:getRvec() or o:getUvec()
 				if math.random() < 0.5 then side = side * -1 end
@@ -1795,6 +2073,7 @@ local function fly()
 	if jink.dir and now < jink.till then
 		heading, pitch = steer_to(me, me.Position + jink.dir * 500, 3.0)
 		throttle = 1.0
+		ab_want = "dodge"
 	end
 
 	-- 3b. Contact reflex: we just touched something (the collision hook below set A1.contact). No
@@ -1837,6 +2116,7 @@ local function fly()
 		if hazard and ((A1.scan_sig and hazard:getSignature() == A1.scan_sig)
 				or (A1.scan_group and A1.scan_group[hazard:getSignature()])) then
 			A1.brake_till = now + 1.2
+			A1.brake_ref = hazard
 			hazard = nil
 		end
 		if hazard then
@@ -1858,21 +2138,47 @@ local function fly()
 	-- Close quarters: within 300 m of any big hull, half throttle at most. At 71 m/s through a
 	-- cluster of freighters carrying cargo, the pilot rammed one while scanning its neighbour
 	-- (Playing Judas iteration 3). Fighters are exempt (they dodge as they go).
+	-- The cap is half throttle PLUS the hull's own speed along our nose: what rams is the closing
+	-- speed, and a flat 0.5 beside a convoy doing 62 m/s held the pilot at 55-63 m/s, so (with the
+	-- brake below) it fell out of scan range of the transport it was scanning (Playing Judas
+	-- trace, 2026-10-15). Never
+	-- below the old 0.5. A1.cfg.relative_close = false restores the flat cap.
 	if not warp_s and not A1.reached and throttle > 0.5 then
+		local maxv = math.max(me.Physics.VelocityMax.z, 1)
+		local f = me.Orientation:getFvec()
 		for i = 1, #mn.Ships do
 			local o = mn.Ships[i]
 			if o:isValid() and not is_small(o) and o:getSignature() ~= me:getSignature()
 					and o:getSignature() ~= A1.goal_sig
 					and o.Position:getDistance(me.Position) < o.Radius + 300
 					and hu.getTargetDistance(o) < 300 then
-				throttle = 0.5
-				break
+				local cap = 0.5
+				if A1.cfg.relative_close ~= false then
+					cap = math.max(0.5, (o.Physics.Velocity:getDotProduct(f) + 0.5 * maxv) / maxv)
+				end
+				throttle = math.min(throttle, cap)
 			end
 		end
 	end
 
 	if A1.brake_till and now < A1.brake_till and not (A1.avoid and now < A1.avoid.till) then
-		throttle = -1.0
+		-- Brake RELATIVE to the hull we are about to hit: its speed along our nose, less 15 m/s,
+		-- so the gap opens at 15 m/s whatever it is doing. Full reverse, then the half-throttle cap
+		-- above, beside a transport doing 62 m/s took the pilot from 47 m to 208 m off it in 8 s, out
+		-- of scan range; the scan
+		-- (5 s for an ST Azrael) never finished and the Kali wing jumped out unscanned (Playing
+		-- Judas trace, 2026-10-15). Only for a hull pulling away faster than 30 m/s: against a
+		-- slow freighter the same formula asked for -0.2 throttle, barely a brake, and the pilot
+		-- hit hulls 10 times in one run instead of 2 (Playing Judas, 2026-10-15), so slow and
+		-- oncoming hulls keep full reverse. A1.cfg.relative_brake = false: full reverse always.
+		local ref = A1.brake_ref
+		local maxv = math.max(me.Physics.VelocityMax.z, 1)
+		local along = (ref and ref:isValid()) and ref.Physics.Velocity:getDotProduct(me.Orientation:getFvec()) or 0
+		if A1.cfg.relative_brake ~= false and along > 30 then
+			throttle = clamp((along - 15) / maxv, -1, 1)
+		else
+			throttle = -1.0
+		end
 	end
 
 	-- Missile audit (observation only): is the missile we just fired homing on anything?
@@ -1898,6 +2204,43 @@ local function fly()
 	ci.Pitch = pitch
 	ci.Bank = last_bank
 	ci.Forward = throttle
+	-- Afterburner (Dustin's review, 2026-10-15: "almost constantly letting them charge fully and
+	-- drain, especially when dodging missiles and lasers, and especially when trying to approach
+	-- a target quickly"). A homing missile on us within 1.2 km is a dodge too. A burn starts on a
+	-- full tank for an approach (charge fully, then drain), above 40% for a hop to a far scan
+	-- target, or above a fifth for a dodge, and runs while wanted until the tank is nearly dry.
+	-- Never once the drive can jump (except the opt-in tail wait in the jump stage): the afterburner
+	-- held the speed above warp speed and the jump never completed (The Hammer and the Anvil,
+	-- attempt B3). Stealth is no reason to hold back: the engine's stealth check is distance,
+	-- view cone and skill only (aicode.cpp ai_is_stealth_visible). A1.cfg.afterburner = false
+	-- turns this off for comparisons.
+	if not ab_want then
+		for i = 1, #mn.Weapons do
+			local w = mn.Weapons[i]
+			if w:isValid() then
+				local ho = w.HomingObject
+				if ho and ho:isValid() and ho:getSignature() == me:getSignature()
+						and w.Position:getDistance(me.Position) < 1200 then
+					ab_want = "dodge"
+					break
+				end
+			end
+		end
+	end
+	if A1.cfg.afterburner ~= false and ab_want and not ab_never then
+		local fuel = me.AfterburnerFuelLeft / math.max(me.AfterburnerFuelMax, 1)
+		if A1.ab_burning then
+			if fuel < 0.03 then A1.ab_burning = false end
+		elseif fuel > ((ab_want == "dodge") and 0.2 or (ab_want == "hop") and 0.4 or 0.95) then
+			A1.ab_burning = true
+		end
+		if A1.ab_burning then
+			me.Physics.AfterburnerActive = true
+			A1.ab_frame = now
+		end
+	else
+		A1.ab_burning = false
+	end
 	-- A1.cfg.ab_chase = metres: afterburner toward a fighter target farther than that, while fuel
 	-- is above 30% (kept for the dogfight). Escort waves launch missiles at the cargo within
 	-- ~10-20 s of arriving (FSPort "The Hammer and the Anvil"), so reaching them sooner looked

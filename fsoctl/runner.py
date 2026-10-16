@@ -19,7 +19,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import envsetup, launcher, match, session
+from . import envsetup, launcher, match, session, sound
 from .errors import HarnessError
 
 _XVFB_READY_TIMEOUT = 10.0
@@ -293,6 +293,8 @@ def main(sid: str) -> int:
         env = envsetup.for_kind(envsetup.child_env(dict(os.environ), display,
                                                    session.prefs_dir(sess), sess.renderer, run),
                                 sess.kind)
+        if sess.sound:
+            env.update(sound.engine_env(sess.id))
         Path(env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
         try:
             return _run_engine(sid, env, started)

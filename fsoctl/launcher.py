@@ -17,7 +17,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import bridge_install, channel, match, paths, renderer, scope, session, xwin
+from . import bridge_install, channel, match, paths, renderer, scope, session, sound, xwin
 from .cli import register
 from .errors import (EXIT_ENGINE, EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT,
                      EXIT_USAGE, HarnessError)
@@ -84,6 +84,7 @@ class LaunchRequest:
     game_name: str | None = None         # host/standalone: shown in the join list; None = match id
     closed: bool = False                 # host: -closed
     network: str = "private"             # "private" (own loopback-only namespace) | "real"
+    sound: bool = False                  # play audio into the session's own sink (sound.py)
 
     @property
     def pilot_multi(self) -> bool:
@@ -129,7 +130,9 @@ def build_argv(sess: session.Session) -> list[str]:
     if sess.kind == "qtfred":
         return _qtfred_argv(sess)
     sw = sess.switches
-    argv = [sess.binary, "-mod", ",".join([paths.BRIDGE_MOD, *sess.mods]), "-nosound"]
+    argv = [sess.binary, "-mod", ",".join([paths.BRIDGE_MOD, *sess.mods])]
+    if not sess.sound:
+        argv.append("-nosound")
     if sess.role != "standalone":
         # The standalone has no window (stand_gui-unix.cpp); everything else draws into Xvfb.
         argv += ["-window", "-res", f"{sess.width}x{sess.height}", "-no_unfocused_pause"]
@@ -481,6 +484,9 @@ def _validate(req: LaunchRequest) -> None:
     _check_mission_name(req)
     _check_network(req)
     _check_role(req)
+    if req.sound and (req.kind != "game" or req.role == "standalone"):
+        raise HarnessError(EXIT_USAGE, "--sound is for game sessions with a window",
+                           "drop --sound (qtFRED and a standalone server play no audio)")
     if not isinstance(req.runtime_sec, int) or req.runtime_sec < 1:
         # Every session runs under a hard runtime cap; 0 was never "unlimited" (QA XFK-2).
         raise HarnessError(EXIT_USAGE, f"runtime {req.runtime_sec!r} is not a positive number of "
@@ -531,7 +537,7 @@ def _prepare(req: LaunchRequest,
                                connect=(req.connect or default_connect(req.match)
                                         if req.match else f"127.0.0.1:{DEFAULT_GAME_PORT}"),
                                game_name=req.game_name, closed=req.closed,
-                               network=req.network)
+                               network=req.network, sound=req.sound)
     try:
         if req.kind == "game":
             chan = paths.channel_dir(session.prefs_dir(sess))
@@ -548,8 +554,21 @@ def _prepare(req: LaunchRequest,
             cfg.write_text(multi_cfg_text(str(req.game_name or req.match)))
         if req.pilot_source:
             _copy_pilot(Path(req.pilot_source), req.pilot_name, session.prefs_dir(sess))
+        if req.sound:
+            module = sound.create_sink(sess.id)
+
+            def keep_module(s: session.Session) -> None:
+                s.sound_module = module
+            sess = session.update(sess.id, keep_module)      # first: the except below needs it
+            sound.write_device_prefs(session.prefs_dir(sess), sess.id)
+            sound.check_device_names(sess.binary, sess.id)
     except BaseException as e:      # incl. SystemExit/KeyboardInterrupt (fix-wave-2 R3)
+        # No scope exists yet, so nothing calls stop for this session: unload its sink here.
+        sink_error = (sound.remove_sink(sess.sound_module, sess.id)
+                      if sess.sound_module is not None else None)
         _mark_failed(sess.id, e)
+        if isinstance(e, HarnessError) and sink_error:
+            e.details["sound_sink_error"] = sink_error + " (`fsoctl cleanup` retries)"
         if isinstance(e, HarnessError):
             e.details.setdefault("id", sess.id)
         raise
@@ -740,7 +759,8 @@ def launch(req: LaunchRequest) -> dict:
     """Start a session and return it once ready.
 
     Returns {id, display, renderer, libraries, state, bridge_refreshed, errors, last_error,
-    switches, warnings}; errors/last_error/switches come from the bridge heartbeat (contract C3).
+    switches, warnings, sound, match, role, port, holder_pid}; errors/last_error/switches come
+    from the bridge heartbeat (contract C3); sound is {sink, streams} for a --sound session.
     Every failure after the session exists stops it and carries details["id"] (QA CR-5, TA-4).
     """
     sess, refreshed = _start(req)
@@ -755,6 +775,11 @@ def launch(req: LaunchRequest) -> dict:
             raise HarnessError(EXIT_LAUNCH,
                                f"asked for Vulkan, engine came up as {found['renderer']}",
                                "check VK_ICD_FILENAMES and that the engine was built with Vulkan")
+        # Inside the try: a stream on another sink (or none) fails the launch and stops the
+        # engine. The engine has opened its audio device by now (the bridge reported a state).
+        routing = None
+        if sess.sound:
+            routing = sound.verify_routing(sess.engine_pid or 0, sess.id)
     except HarnessError as e:
         _quote_heartbeat(e, sess)
         _abandon(sess.id, e)
@@ -769,8 +794,8 @@ def launch(req: LaunchRequest) -> dict:
     return {"id": sess.id, "display": sess.display, **found, "state": hb.get("state"),
             "bridge_refreshed": refreshed, "errors": hb.get("errors"),
             "last_error": hb.get("last_error"), "switches": hb.get("switches"),
-            "warnings": _warnings(req, found), "match": sess.match, "role": sess.role,
-            "port": sess.port,
+            "warnings": _warnings(req, found), "sound": routing, "match": sess.match,
+            "role": sess.role, "port": sess.port,
             "holder_pid": match.load(sess.match).holder_pid if sess.match else None}
 
 
@@ -958,6 +983,12 @@ def stop(sid: str) -> dict:
                                                   "use `fsoctl list`"))
     runner_first = _stop_runner_first(sess)
     scope.stop(sess.scope)   # backstop: ends whatever is left (or everything, if the runner hung)
+    sink_error = None
+    if sess.sound_module is not None:
+        # After the engine is gone: its streams go with it (node.dont-reconnect would leave them
+        # silent anyway). A recorder still on the monitor without that property would be moved
+        # to the desktop's audio, so recorders stop first (README "Sound").
+        sink_error = sound.remove_sink(sess.sound_module, sid)
 
     def apply(s: session.Session) -> None:
         if s.status in ("starting", "running"):
@@ -971,8 +1002,11 @@ def stop(sid: str) -> dict:
             raise
         return {"id": sid, "status": "stopped", "exit_info": None, "runner_first": runner_first,
                 "note": "its run folder was removed while it was being stopped"}
-    return {"id": sid, "status": sess.status, "exit_info": sess.exit_info,
-            "runner_first": runner_first}
+    out = {"id": sid, "status": sess.status, "exit_info": sess.exit_info,
+           "runner_first": runner_first}
+    if sink_error:
+        out["sound_sink_error"] = sink_error + " (`fsoctl cleanup` retries)"
+    return out
 
 
 def sessions_in_match(mid: str) -> list[session.Session]:
@@ -1076,12 +1110,40 @@ def cleanup(older_than_sec: float = 0) -> dict:
     """Delete run folders of finished sessions at least `older_than_sec` old, and old shadow and
     fred-missions folders no remaining session uses.
 
-    Returns {"removed": [ids], "removed_folders": [paths], "failed": [{path, error}]}; a folder
+    Returns {"removed": [ids], "removed_folders": [paths], "failed": [{path, error}],
+    "removed_sinks": [names], "kept_sinks": [names]} (session sound sinks); a folder
     that cannot be deleted is reported, not fatal. Runs under launch.lock (R4), so no launch is
     between staging and saving its session while cleanup decides what is unreferenced.
     """
     with session.file_lock(paths.runtime_root() / "launch.lock", _LOCK_WAIT):
         return _cleanup_locked(older_than_sec)
+
+
+def _cleanup_sinks(kept: list[session.Session], failed: list[dict]) -> dict:
+    """Unload this runtime root's session sinks whose session is not starting or running (it
+    exited by itself, a stop could not reach the sound server, fsoctl crashed).
+
+    Returns {"removed_sinks": [names], "kept_sinks": [names a recorder still captures]}. Other
+    roots' sinks are never touched (sound.orphan_sinks). A machine without pactl has no sinks,
+    so that case is silent; any other pactl failure is reported in `failed`. The caller holds
+    launch.lock, so a session of this root between create_sink and its scope is "starting".
+    """
+    out: dict = {"removed_sinks": [], "kept_sinks": []}
+    live = {s.id for s in kept if s.status in ("starting", "running")}
+    try:
+        orphans, out["kept_sinks"] = sound.orphan_sinks(live)
+    except sound.PactlMissing:
+        return out
+    except HarnessError as e:
+        failed.append({"path": "pulse sinks", "error": e.message})
+        return out
+    for module, name in orphans:
+        err = sound.remove_sink(module, name.rsplit("_", 1)[1])
+        if err:
+            failed.append({"path": f"pulse sink {name}", "error": err})
+        else:
+            out["removed_sinks"].append(name)
+    return out
 
 
 def _cleanup_locked(older_than_sec: float) -> dict:
@@ -1099,6 +1161,7 @@ def _cleanup_locked(older_than_sec: float) -> dict:
             failed.append({"path": str(session.run_dir(s)), "error": str(e)})
             kept.append(s)
     folders = _cleanup_side_folders(now, older_than_sec, kept, failed)
+    sinks = _cleanup_sinks(kept, failed)
     # After the session pass, so a match whose last session was just removed goes in the same
     # run. A dead or removed match with no session left is just a folder; same age rule.
     for m in match.list_matches():
@@ -1109,7 +1172,7 @@ def _cleanup_locked(older_than_sec: float) -> dict:
             removed.append(m.id)
         except OSError as e:
             failed.append({"path": str(paths.match_dir(m.id)), "error": str(e)})
-    return {"removed": removed, "removed_folders": folders, "failed": failed}
+    return {"removed": removed, "removed_folders": folders, "failed": failed, **sinks}
 
 
 # ---- command line ----------------------------------------------------------------------------
@@ -1172,6 +1235,9 @@ def _configure_launch(p: argparse.ArgumentParser) -> None:
     p.add_argument("--closed", action="store_true", help="host: start the game closed")
     p.add_argument("--network", choices=NETWORKS, default="private",
                    help="private: own loopback-only network (default); real: the machine's")
+    p.add_argument("--sound", action="store_true",
+                   help="play audio into the session's own null sink (named in the result's "
+                        "sound.sink; record <sink>.monitor); default: -nosound")
     p.add_argument("extra", nargs="*", help="extra engine arguments, after --")
 
 
@@ -1190,7 +1256,7 @@ def _cli_launch(args: argparse.Namespace) -> dict:
         kind="qtfred" if args.qtfred else "game", runtime_sec=args.runtime,
         ready_timeout=args.ready_timeout, match=args.match, role=args.role, port=args.port,
         connect=args.connect, game_name=args.game_name, closed=args.closed,
-        network=args.network)
+        network=args.network, sound=args.sound)
     return launch(req)
 
 

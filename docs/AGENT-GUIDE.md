@@ -280,6 +280,10 @@ log lines and the problems in the whole log, the popups that came up, the last h
 
 ## Things that will surprise you
 
+- Sessions are silent unless launched with `sound`; then the audio goes to the session's own
+  sink, never the speakers. Record `<launch result sound.sink>.monitor` (one session's audio
+  only) and stop the recorder before `stop` (README "Sound").
+
 - `sexp` refuses outside a mission (the engine evaluates even `( true )` as false there).
 - `lua`, `post_event`, and any sexp containing "eval" need a session launched with `allow_eval`.
 - In FSO Lua, the global `error()` ends the game. In `lua` commands the harness swaps it for a

@@ -407,7 +407,7 @@ def _ns_sess(**kw):
     return _mk(**kw) if "status" in kw else _mk(status="starting", **kw)
 
 
-def test_engine_argv_wraps_only_the_engine(monkeypatch):
+def test_engine_argv_wraps_only_the_engine(tmp_runtime, monkeypatch):
     """Private: the unshare prefix in front of the engine's own argv; real: bare; match: the
     match's nsenter prefix; an old record (network None) is treated as private."""
     built_for = []
