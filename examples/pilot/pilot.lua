@@ -659,6 +659,7 @@ local function reset_after_restart()
 	A1.avoid, A1.extend, A1.contact, A1.escaping, A1.scan_sig = nil, nil, nil, false, nil
 	A1.reached, A1.jump_t, A1.goal_sig, A1.goal_entry_done = nil, nil, nil, nil
 	A1.warp_avail_t, A1.tail_note_t, A1.tail_wait, A1.jumping = nil, nil, nil, nil
+	A1.cover_warp_t, A1.cover_note_t, A1.cover = nil, nil, nil
 	A1.amb_t, A1.amb_done, A1.amb_noted, A1.brake_till, A1.brake_ref = nil, nil, nil, nil, nil
 	A1.scanned, A1.scan_group, A1.close_t, A1.idle_p = {}, nil, nil, nil
 	A1.spare_seen, A1.spare_sig, A1.spare_step, A1.spare_menu, A1.spare_t, A1.spare_released = nil, nil, nil, nil, nil, nil
@@ -1234,6 +1235,61 @@ local function flee_dir(me)
 	return dir
 end
 
+-- The second of Dustin's two escapes (A1.cfg.jump_cover = true; review of Playing Judas,
+-- 2026-10-15: "dance around the warships, keeping them between you and the fighters because
+-- their turrets are easier to dodge than the fighters are"). Pursuers = hostile fighters and
+-- bombers within 1.5 km. Cover = the big ship (radius over 150 m, any team) within 4 km whose
+-- far side from the pursuers' centre is nearest to us; the point to hold is 200 m off its real
+-- hull on that side (250 m beyond its bounding sphere if the ray misses). Returns the point,
+-- the cover ship, and whether its hull blocks
+-- the line from every pursuer to us; nil when there is no pursuer or no cover. Bounded: two
+-- passes over the mission's ship list. Measured in Playing Judas (2026-10-16): the jump survived
+-- 6 of 9 with it vs 7 of 9 without, and cover formed at any moment in only 4 of the 9 runs,
+-- because the one big ship near the bay is the 2 km Lucifer, Rama's own launch point. Kept
+-- opt-in for missions with a cruiser-sized hull nearby (Dustin: "a tool in the toolkit").
+local function cover_plan(me)
+	local sum, n = nil, 0
+	local pursuers = {}
+	for i = 1, #mn.Ships do
+		local o = mn.Ships[i]
+		if o:isValid() and is_small(o) and not o:isDying() and o:getSignature() ~= me:getSignature()
+				and o.Team:attacks(me.Team) and o.Position:getDistance(me.Position) < 1500 then
+			sum = sum and (sum + o.Position) or o.Position
+			n = n + 1
+			pursuers[n] = o
+		end
+	end
+	if n == 0 then return nil end
+	local centre = sum / n
+	local best, bestp, bestd = nil, nil, 1e12
+	for i = 1, #mn.Ships do
+		local c = mn.Ships[i]
+		if c:isValid() and not is_small(c) and not c:isDying() and c.Radius > 150
+				and c.Position:getDistance(me.Position) < 4000 + c.Radius then
+			local away = c.Position - centre
+			if away:getMagnitude() > 1 then
+				-- The hull's real far side, by a ray from beyond the bounding sphere back toward the
+				-- centre: off the sphere alone the point stayed 1.8-2.2 km from the pilot, which never
+				-- reached it (Playing Judas, cover v1, cover formed in 1 of 3 runs, briefly).
+				local dir = away:getNormalized()
+				local pt = c.Position + dir * (c.Radius + 250)
+				local hit = hull_hit(c, c.Position + dir * (c.Radius + 400), c.Position)
+				if hit then pt = hit + dir * 200 end
+				-- A destroyer-sized hull (radius over 1 km) costs 2 km extra: rounding one is a long
+				-- way along its turrets, and the pilot scraped the Lucifer 2-4 times a run trying.
+				local d = pt:getDistance(me.Position) + (c.Radius > 1000 and 2000 or 0)
+				if d < bestd then best, bestp, bestd = c, pt, d end
+			end
+		end
+	end
+	if not best then return nil end
+	local covered = true
+	for _, o in ipairs(pursuers) do
+		if not hull_hit(best, o.Position, me.Position) then covered = false; break end
+	end
+	return bestp, best, covered
+end
+
 -- Would a bolt fired now at `aim` (adist m away) pass near a ship that is not hostile, before it
 -- reaches the target? Friendly ships within their radius + 30 m of the line, guarded ships within
 -- radius + 80 m ("essentially zero chance of hitting escort subjects", Dustin's review,
@@ -1638,6 +1694,51 @@ local function fly()
 		end
 		heading, pitch = steer_to(me, me.Position + flee * 1000, 3.0)
 		throttle = 1.0
+		-- Cover (opt-in, see cover_plan): fly to the far side of a big ship from the pursuers, round
+		-- its hull rather than through it; once the hull blocks every pursuer and the drive is
+		-- ready, turn away from the hull (the clear space the jump check below wants) and jump.
+		-- Without cover 40 s after the drive comes back, jump as usual.
+		local cover_hold = false
+		if A1.cfg.jump_cover == true and not A1.jumping then
+			local pt, cship, covered = cover_plan(me)
+			-- Commit to a point: recomputed every frame, the far side from pursuers who follow us
+			-- swung round the hull as fast as we flew, and the distance to it grew from 591 m to
+			-- 3.5 km (cover v2). Keep the chosen point until we are within 200 m of it or 20 s pass.
+			if pt then
+				local c = A1.cover
+				if c and c.sig == cship:getSignature() and now - c.t < 20
+						and c.pt:getDistance(me.Position) > 200 then
+					pt = c.pt
+				else
+					A1.cover = { pt = pt, sig = cship:getSignature(), t = now }
+				end
+			end
+			if pt then
+				if me:canWarp() then A1.cover_warp_t = A1.cover_warp_t or now end
+				local late = A1.cover_warp_t and now - A1.cover_warp_t >= 40
+				if covered and me:canWarp() then
+					local away = (me.Position - cship.Position):getNormalized()
+					heading, pitch = steer_to(me, me.Position + away * 1000, 3.0)
+					cover_hold = not late and away:getDotProduct(me.Orientation:getFvec()) < 0.9
+				else
+					local goal = pt
+					if hull_hit(cship, me.Position, pt) then
+						local out = (me.Position + pt) / 2 - cship.Position
+						if out:getMagnitude() < 1 then out = me.Orientation:getRvec() end
+						goal = cship.Position + out:getNormalized() * (cship.Radius + 300)
+					end
+					heading, pitch = steer_to(me, goal, 3.0)
+					local d = goal:getDistance(me.Position)
+					throttle = d > 300 and 1.0 or math.max(d / 300, 0.3)
+					cover_hold = me:canWarp() and not late
+				end
+				if now - (A1.cover_note_t or -100) > 3 then
+					A1.cover_note_t = now
+					note(string.format("cover: %s, %s (%.0f m to the point)", cship.Name,
+						covered and "covered" or "moving", pt:getDistance(me.Position)))
+				end
+			end
+		end
 		-- Afterburner while fleeing, as a player holds Tab: the pursuers launch from the bay we
 		-- just left, and with the stock speed six of them caught the pilot during the jump
 		-- (Playing Judas with MediaVPs, 2026-10-15). Lua cannot hold the key, so the physics
@@ -1712,7 +1813,7 @@ local function fly()
 				note(string.format("jump waits: %s on our tail (%.0f m)", tail.Name, tail.Position:getDistance(me.Position)))
 			end
 		end
-		if not blocker and not tail and now - (A1.jump_t or -100) > wait then
+		if not blocker and not tail and not cover_hold and now - (A1.jump_t or -100) > wait then
 			A1.jump_t = now
 			A1.press[#A1.press + 1] = "END_MISSION"
 			-- The last moment: once the drive engages the engine flies the ship straight, so

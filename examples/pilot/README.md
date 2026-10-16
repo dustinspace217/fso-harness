@@ -284,3 +284,14 @@ nose off mid-scan (an ST Azrael needs 5 s unbroken). With the three scan-lock fi
 A jump that waits for a clear tail (`jump_when_clear`) never got one in six tries, with or
 without the afterburner; it stays off. The afterburner hop first rammed Durga 1 at the same two
 moments in both runs that had it; the hop now stops 1000 m past the hold point instead of 600.
+
+**Warship cover for the jump (`jump_cover = true`, opt-in).** Dustin's other escape: "Keep moving,
+but keep the big ship between me and the little guys." While fighters chase, fly to the far side
+of the nearest big hull (a point 200 m off the real hull, found by a ray; destroyers over 1 km in
+radius cost 2 km extra in the choice; the point is kept until reached or for 20 s), and jump once
+the hull blocks every pursuer, pointed away from it; 40 s after the drive returns, jump anyway.
+Playing Judas, 9 runs over three versions: jump survived 6 of 9 (default 7 of 9); cover formed
+at some moment in 4 of the 9, and those won 3 of 4, the same rate as the rest (3 of 5).
+A recording of one run showed why: the only big ship near the fighter bay is the Lucifer, whose
+far side was 1.5-2 km away and which Rama launches from; the pilot spent the wait in open space.
+In one run cover worked as designed (covered, turned away, jumped at once) and the pilot survived.
