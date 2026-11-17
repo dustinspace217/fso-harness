@@ -15,7 +15,6 @@ mid-write stayed cached forever.
 """
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import itertools
 import json
@@ -25,7 +24,7 @@ import shutil
 import time
 from pathlib import Path
 
-from . import launcher, paths, shadowdir
+from . import launcher, paths, platform, shadowdir
 from .cli import register
 from .errors import EXIT_ENGINE, EXIT_TIMEOUT, EXIT_USAGE, HarnessError
 from .launcher import LaunchRequest
@@ -160,7 +159,7 @@ def _install(shadow: Path, dest: Path) -> None:
         for name, src in shadowdir.collect(shadow, list(FILES)).items():
             shutil.copy2(src, tmp / name)
             sizes[name] = (tmp / name).stat().st_size
-        (tmp / MANIFEST).write_text(json.dumps({"files": sizes}, indent=1))
+        (tmp / MANIFEST).write_text(json.dumps({"files": sizes}, indent=1), encoding="utf-8")
         old = dest.parent / f".{dest.name}.old-{secrets.token_hex(4)}"
         if dest.exists():
             os.rename(dest, old)
@@ -207,24 +206,21 @@ def _key_lock(dest: Path):
     The wait covers one whole generation (engine start, writing, quit) by another caller.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with open(_key_lock_path(dest), "a") as f:   # "a": never truncates the lock file
+    # "a": never truncates the lock file
+    with open(_key_lock_path(dest), "a", encoding="utf-8") as f:
         deadline = time.monotonic() + _LOCK_WAIT_SEC
-        while True:   # bounded by the deadline below
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() > deadline:
-                    raise HarnessError(EXIT_TIMEOUT, f"another api_docs held {dest.name} for "
-                                       f"{_LOCK_WAIT_SEC:.0f}s", "retry later") from None
-                time.sleep(0.2)
+        while not platform.locks.lock_exclusive(f):   # bounded by the deadline below
+            if time.monotonic() > deadline:
+                raise HarnessError(EXIT_TIMEOUT, f"another api_docs held {dest.name} for "
+                                   f"{_LOCK_WAIT_SEC:.0f}s", "retry later") from None
+            time.sleep(0.2)
         yield   # released when the file closes
 
 
 def _cache_valid(dest: Path) -> bool:
     """True when dest holds every file at exactly the size its manifest recorded."""
     try:
-        sizes = json.loads((dest / MANIFEST).read_text())["files"]
+        sizes = json.loads((dest / MANIFEST).read_text(encoding="utf-8"))["files"]
         return all((dest / n).stat().st_size == sizes[n] for n in FILES)
     except (OSError, ValueError, KeyError, TypeError):
         return False

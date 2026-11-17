@@ -96,8 +96,9 @@ def test_journal_lines_are_json(tmp_runtime):
 
 
 def test_launch_request_carries_the_network_mode(tmp_runtime):
-    """Replay keeps the opt-out: a real-network session replays on the real network (QA XFA-5);
-    an old record (None) replays private, the current default."""
+    """Replay keeps the network: a real-network session replays on the real network (QA XFA-5),
+    a private one privately, and an old record (None, from before the field) on the real network,
+    where it ran and today's default (plan A QA CR-5/TA-10)."""
     s = session.new_session(kind="game", binary="/bin/true", fs2path="/tmp", mods=[], mission=None,
                             renderer="opengl", width=1, height=1, switches={}, allow_eval=False,
                             extra_args=[], network="real")
@@ -106,4 +107,6 @@ def test_launch_request_carries_the_network_mode(tmp_runtime):
                              renderer="opengl", width=1, height=1, switches={}, allow_eval=False,
                              extra_args=[])
     s2.network = None
+    assert record.launch_request_for(s2).network == "real"
+    s2.network = "private"
     assert record.launch_request_for(s2).network == "private"

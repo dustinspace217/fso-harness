@@ -118,6 +118,7 @@ def _shadow_source(tmp_path, cwd_name="abcd1234"):
     return s, fs2, old
 
 
+@pytest.mark.symlinks
 def test_replay_of_a_shadow_session_gets_a_fresh_shadow(tmp_runtime, tmp_path):
     # Review finding X-1: the rebuilt request dropped cwd, so -profile_write_file wrote into
     # FS2PATH.
@@ -135,6 +136,7 @@ def test_replay_of_a_plain_session_keeps_no_cwd(tmp_runtime):
     assert req.cwd is None
 
 
+@pytest.mark.symlinks
 def test_replay_never_reuses_a_missing_shadow(tmp_runtime, tmp_path):
     # The old folder may have been cleaned up; the replay still gets a working shadow.
     s, _, old = _shadow_source(tmp_path)

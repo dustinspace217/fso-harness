@@ -10,7 +10,6 @@ Release builds compile Warning() out and write no fs2_open.log, so validating wi
 (FSO_BIN_DEBUG) shows far more; the result says which kind of build ran.
 """
 import argparse
-import json
 import os
 
 from . import channel, game, launcher, logs, paths, session
@@ -37,12 +36,12 @@ def _findings(sid: str) -> dict:
     try:
         found = logs.read(sid, tail=1)
         out["problems"], out["problems_total"] = found["problems"], found["problems_total"]
+        if "truncated_to_last_bytes" in found:    # counts cover only the log's end (CR2-2)
+            out["log_truncated_to_last_bytes"] = found["truncated_to_last_bytes"]
     except HarnessError as e:
         out["log_error"] = e.message
-    popups = channel.Channel(sess).dir / "popups.txt"
-    if popups.exists():
-        out["popups"] = [json.loads(x) for x in popups.read_text().splitlines() if x.strip()]
-    out["build"] = "debug" if logs.sources(sess)["fso"].exists() else "release"
+    out["popups"] = channel.Channel(sess).popups()
+    out["build"] = "debug" if logs.exists(sess, "fso") else "release"
     return out
 
 

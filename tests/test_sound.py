@@ -75,7 +75,8 @@ def test_sound_is_refused_for_qtfred_and_standalone(tmp_runtime, monkeypatch):
     with pytest.raises(HarnessError) as e:
         launcher._validate(LaunchRequest(binary="/bin/true", kind="qtfred", sound=True))
     assert e.value.code == EXIT_USAGE and "--sound" in e.value.message
-    monkeypatch.setattr(launcher.match, "load", lambda mid: type("M", (), {"status": "alive"})())
+    monkeypatch.setattr(launcher.match, "load", lambda mid: type("M", (), {"status": "alive",
+                                                                          "network": "private"})())
     monkeypatch.setattr(launcher.match, "alive", lambda m: True)
     with pytest.raises(HarnessError) as e:
         launcher._validate(LaunchRequest(binary="/bin/true", match="m0a1b2c3d", role="standalone",
@@ -430,7 +431,7 @@ def launchable(tmp_runtime, tmp_path, monkeypatch):
     monkeypatch.setattr(scope, "stop", stop)
     monkeypatch.setattr(channel.Channel, "wait_ready",
                         lambda self, timeout, alive: {"state": "GS_STATE_MAIN_MENU"})
-    monkeypatch.setattr(launcher.renderer, "read_maps", lambda pid: "")
+    monkeypatch.setattr(launcher.procs, "loaded_libraries", lambda pid: "")
     monkeypatch.setattr(sound, "_pactl", FakePactl())
     return stopped
 

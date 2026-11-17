@@ -1,0 +1,69 @@
+{
+ "os": "macos",
+ "label": "ci",
+ "qt_version": "6.12.0",
+ "target": "GTF Hercules",
+ "routes": [
+  {
+   "route": "posted Down, no focus call (control)",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "AXFocused + posted Down",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "AXFocused + posted Down, Down, Return",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": null
+  },
+  {
+   "route": "AXFocused + posted Space, Down, Return",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": null
+  },
+  {
+   "route": "AXPress + posted Down, Return",
+   "took": true,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "AXFrontmost + AXFocused + system Down, Down, Return (real input)",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": null
+  },
+  {
+   "route": "AXFrontmost + AXPress + system Down, Return (real input)",
+   "took": true,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": ""
+  }
+ ],
+ "notes": [],
+ "routes_that_took": [
+  "AXPress + posted Down, Return",
+  "AXFrontmost + AXPress + system Down, Return (real input)"
+ ]
+}

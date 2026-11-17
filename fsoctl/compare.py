@@ -16,10 +16,11 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import launcher, scenario, session
+from . import launcher, platform, scenario, session
 from .cli import register
 from .errors import EXIT_LAUNCH, EXIT_USAGE, HarnessError
 from .launcher import LaunchRequest
+from .platform import programs
 
 _MAE = re.compile(r"\(([0-9.eE+-]+)\)")   # "123.4 (0.00188)": the normalised value
 _MAGICK_TIMEOUT = 60
@@ -97,9 +98,31 @@ def parse_mae(text: str) -> float:
     return float(m.group(1))
 
 
+def _need_magick() -> None:
+    """Refuse (EXIT_LAUNCH) when ImageMagick's `magick` is not on PATH.
+
+    Called before any session starts. WHY first: the picture comparison is the last step, so
+    without this check two whole sessions ran and then the verb died of a bare
+    FileNotFoundError (seen on Windows, where ImageMagick is not part of the system).
+    """
+    _magick()
+
+
+def _magick() -> str:
+    """Return the ImageMagick program to run, or refuse (EXIT_LAUNCH) when it is not on
+    PATH. On Windows the full path it was found at, so that starting it looks nowhere else
+    (platform/programs.py); elsewhere the plain name."""
+    found = programs.find("magick")
+    if found is None:
+        raise HarnessError(EXIT_LAUNCH, "ImageMagick is not installed; the comparison "
+                           "needs it to tell two screenshots apart",
+                           "install ImageMagick so that the `magick` command is on PATH")
+    return found if platform.NAME == "windows" else "magick"
+
+
 def diff_images(a_path: str, b_path: str, out_path: str) -> dict:
     """Compare two screenshots; return {"mean_abs_diff" (0..1), "diff_image"}."""
-    r = subprocess.run(["magick", "compare", "-metric", "MAE", a_path, b_path, out_path],
+    r = subprocess.run([_magick(), "compare", "-metric", "MAE", a_path, b_path, out_path],
                        capture_output=True, text=True, timeout=_MAGICK_TIMEOUT, check=False)
     if r.returncode not in (0, 1):   # 0 = same, 1 = different, 2 = error
         raise HarnessError(EXIT_LAUNCH, f"magick compare failed: {r.stderr.strip()[:200]}",
@@ -189,6 +212,7 @@ def compare(binary_a: str, binary_b: str, launch: dict, steps: list,
     """
     tol = {**_DEFAULT_TOL, **(tol or {})}
     scenario.validate(steps)
+    _need_magick()
     a = _run_once(binary_a, launch, steps, launch.get("renderer", "opengl"))
     b = _run_once(binary_b, launch, steps, launch.get("renderer", "opengl"))
     snaps = _diff_runs(a, b, tol)
@@ -200,6 +224,7 @@ def renderer_compare(binary: str, launch: dict, steps: list, tol: dict | None = 
     caller's choice); return per-snapshot diffs and which renderer each run really used."""
     tol = {**_DEFAULT_TOL, **(tol or {})}
     scenario.validate(steps)
+    _need_magick()
     a = _run_once(binary, launch, steps, "opengl")
     b = _run_once(binary, launch, steps, "vulkan")
     snaps = _diff_runs(a, b, tol)
@@ -219,7 +244,7 @@ def _json_arg(text: str, what: str):
 def _load_steps(path: str) -> list:
     """Read a scenario JSON file."""
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise HarnessError(EXIT_USAGE, f"cannot read scenario {path}: {e}", "a JSON list") from e
 

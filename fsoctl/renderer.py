@@ -5,6 +5,13 @@ Vulkan came up, so the reliable evidence is what the process loaded. The harness
 for OpenGL runs, which goes through Mesa (libgallium / libGLX_mesa); a Vulkan run maps a Vulkan
 driver (NVIDIA: libnvidia-glvkspirv; Mesa: libvulkan_<driver>) and no Mesa GL (both checked against
 real engine runs on 2026-10-12 for NVIDIA and Mesa GL; Mesa Vulkan names from /usr/lib64).
+
+On Windows the evidence is the module list (platform.procs.loaded_libraries), read the same
+way. Checked there: Mesa's software OpenGL, libgallium_wgl.dll (VM runs, 2026-11-16). NOT yet
+checked on a machine with a graphics card: the vendors' OpenGL drivers (nvoglv64.dll,
+atio6axx.dll, ig*icd64.dll) and Vulkan. NVIDIA's nvoglv64.dll serves OpenGL and Vulkan alike,
+so the one Vulkan-only name is the loader, vulkan-1.dll; whether an OpenGL run ever loads it
+is unmeasured (plan B, "Unmeasured").
 """
 import re
 
@@ -12,29 +19,32 @@ _VK = re.compile(r"(libnvidia-glvkspirv\.so|libvulkan_[a-z0-9_]+\.so)")
 _GL = re.compile(r"(libgallium[-0-9.]*\.so|libGLX_mesa\.so)")
 _ANY = re.compile(r"(libgallium[-0-9.]*\.so|libGLX_[a-z]+\.so|libnvidia-gl[a-z]+\.so|"
                   r"libvulkan_[a-z0-9_]+\.so|libvulkan\.so)")
+# Windows module names (file names are case-insensitive there).
+_WIN_MESA_GL = re.compile(r"(libgallium_wgl\.dll)", re.IGNORECASE)
+_WIN_VENDOR_GL = re.compile(r"(nvoglv64\.dll|atio6axx\.dll|ig[0-9a-z]*icd64\.dll)", re.IGNORECASE)
+_WIN_VK = re.compile(r"(vulkan-1\.dll)", re.IGNORECASE)
 
 
 def classify(maps_text: str) -> dict:
-    """Classify a /proc/<pid>/maps dump.
+    """Classify what a process loaded: a /proc/<pid>/maps dump (Linux) or a list of module
+    file names (Windows), as platform.procs.loaded_libraries returns it.
 
     Returns {"renderer": "vulkan" | "opengl" | "unknown", "libraries": [sorted library names]}.
+    The same three words on every OS: callers compare the word with the renderer that was
+    asked for. Mesa's OpenGL decides first, as before (it is what a Vulkan request falls back
+    to); then a Vulkan driver or, on Windows, the Vulkan loader; then a vendor's OpenGL driver.
     """
-    libs = sorted(set(_ANY.findall(maps_text)))
-    has_gl = bool(_GL.search(maps_text))
-    has_vk = bool(_VK.search(maps_text))
+    windows = [_WIN_MESA_GL, _WIN_VENDOR_GL, _WIN_VK]
+    libs = sorted(set(_ANY.findall(maps_text))
+                  | {name.lower() for pattern in windows for name in pattern.findall(maps_text)})
+    has_gl = bool(_GL.search(maps_text) or _WIN_MESA_GL.search(maps_text))
+    has_vk = bool(_VK.search(maps_text) or _WIN_VK.search(maps_text))
     if has_gl:
         kind = "opengl"
     elif has_vk:
         kind = "vulkan"
+    elif _WIN_VENDOR_GL.search(maps_text):
+        kind = "opengl"
     else:
         kind = "unknown"
     return {"renderer": kind, "libraries": libs}
-
-
-def read_maps(pid: int) -> str:
-    """Return /proc/<pid>/maps text, or "" if the process is gone or unreadable."""
-    try:
-        with open(f"/proc/{pid}/maps") as f:
-            return f.read()
-    except OSError:
-        return ""

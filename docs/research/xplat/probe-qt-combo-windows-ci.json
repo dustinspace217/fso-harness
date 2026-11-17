@@ -1,0 +1,72 @@
+{
+ "os": "windows",
+ "label": "ci",
+ "qt_version": "6.12.0",
+ "target": "GTF Hercules",
+ "routes": [
+  {
+   "route": "posted Down, no focus call (control)",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "UIA SetFocus + posted Down",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "UIA Expand + posted Down, Return to the popup window",
+   "took": true,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "UIA Expand + posted Down, Return to the dialog window",
+   "took": true,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "UIA Expand + posted mouse click on the item",
+   "took": true,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "UIA Expand + LegacyIAccessible default action on the item",
+   "took": true,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "UIA SetFocus + real key Down (needs the input desktop)",
+   "took": false,
+   "reset_ok": true,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": "shipNameEdit"
+  }
+ ],
+ "notes": [],
+ "desktop": "Default",
+ "routes_that_took": [
+  "UIA Expand + posted Down, Return to the popup window",
+  "UIA Expand + posted Down, Return to the dialog window",
+  "UIA Expand + posted mouse click on the item",
+  "UIA Expand + LegacyIAccessible default action on the item"
+ ]
+}

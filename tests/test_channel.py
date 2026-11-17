@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 import time
@@ -181,3 +182,135 @@ def test_wait_ready_returns_the_first_heartbeat(tmp_runtime):
     ch = channel.Channel(_sess())
     _old_heartbeat(ch, 0)
     assert ch.wait_ready(5, alive=lambda: False)["state"] == "GS_STATE_BRIEFING"
+
+
+# ---- cross-family review XFA-3: a busy file after the command was sent ----
+def _refusing(monkeypatch, name, times, only="res-"):
+    """Make channel.safefs.<name> refuse `times` calls on files whose path holds `only`, the
+    way Windows refuses a file another program has open; return the list of refused paths."""
+    real, refused = getattr(channel.safefs, name), []
+
+    def call(base, rel, *more):
+        if only in rel and len(refused) < times:
+            refused.append(rel)
+            raise PermissionError(13, "Permission denied")
+        return real(base, rel, *more)
+    monkeypatch.setattr(channel.safefs, name, call)
+    monkeypatch.setattr(channel.platform, "BUSY_FILES_REFUSE", True)
+    return refused
+
+
+def test_a_reply_another_program_has_open_is_read_on_a_later_look(tmp_runtime, monkeypatch):
+    # The command ran and its reply is there; a scanner has the file open for a moment. The
+    # first version turned that into "unusable ... try the command again": a second run of a
+    # command that had already changed the game.
+    ch = channel.Channel(_sess())
+    refused = _refusing(monkeypatch, "read", 3)
+    with FakeBridge(ch.dir):
+        assert ch.send("ping", {"a": 1}) == {"echo": {"a": 1}}
+    assert len(refused) == 3
+
+
+def test_a_reply_that_cannot_be_deleted_still_gives_its_result(tmp_runtime, monkeypatch):
+    ch = channel.Channel(_sess())
+    refused = _refusing(monkeypatch, "unlink", 99)
+    with FakeBridge(ch.dir):
+        assert ch.send("ping", {"a": 2}) == {"echo": {"a": 2}}
+    assert len(refused) == 1 and list(ch.dir.glob("res-*.json"))    # left for cleanup
+
+
+def test_a_reply_that_stays_busy_is_a_timeout_that_says_the_command_was_taken(tmp_runtime,
+                                                                             monkeypatch):
+    ch = channel.Channel(_sess())
+    _refusing(monkeypatch, "read", 10 ** 6)
+    with FakeBridge(ch.dir), pytest.raises(HarnessError) as e:
+        ch.send("ping", timeout=0.5, alive=lambda: True)
+    assert e.value.code == EXIT_TIMEOUT and e.value.details["fate"] == "taken_unknown"
+    assert "retry" in e.value.hint and "try the command again" not in e.value.hint
+
+
+def test_a_command_file_in_use_at_the_timeout_is_not_called_withdrawn(tmp_runtime,
+                                                                      monkeypatch):
+    # nobody answers; at the timeout the command file cannot be renamed because someone has
+    # it open, most likely the bridge taking it: whether it ran is not known
+    ch = channel.Channel(_sess())
+    ch.dir.mkdir(parents=True)
+    _refusing(monkeypatch, "rename", 1, only="cmd-")
+    with pytest.raises(HarnessError) as e:
+        ch.send("ping", timeout=0.3, alive=lambda: True)
+    assert e.value.code == EXIT_TIMEOUT and e.value.details["fate"] == "taken_unknown"
+
+
+def test_where_busy_files_do_not_refuse_the_same_errors_are_still_tampering(tmp_runtime,
+                                                                           monkeypatch):
+    # Linux: the harness made every channel file itself, so a refusal is the engine's doing
+    ch = channel.Channel(_sess())
+    _refusing(monkeypatch, "read", 1)
+    monkeypatch.setattr(channel.platform, "BUSY_FILES_REFUSE", False)
+    with FakeBridge(ch.dir), pytest.raises(HarnessError) as e:
+        ch.send("ping")
+    assert e.value.details == {"kind": channel.TAMPERED}
+
+
+# ---- round 2, tests seat TAF-6: the other two deletes after a command was sent ----
+def test_a_withdrawn_command_that_cannot_be_deleted_is_still_reported_as_withdrawn(
+        tmp_runtime, monkeypatch):
+    # nobody took the command; the rename to ".withdrawn" won, so it is certain it did not
+    # run. A busy file at the delete that follows must not turn that into "unusable".
+    ch = channel.Channel(_sess())
+    ch.dir.mkdir(parents=True)
+    _refusing(monkeypatch, "unlink", 1, only="withdrawn")
+    with pytest.raises(HarnessError) as e:
+        ch.send("ping", timeout=0.3, alive=lambda: True)
+    assert e.value.code == EXIT_TIMEOUT and e.value.details["fate"] == "withdrawn"
+
+
+def test_a_dead_engine_is_reported_even_when_its_command_file_cannot_be_deleted(
+        tmp_runtime, monkeypatch):
+    ch = channel.Channel(_sess())
+    ch.dir.mkdir(parents=True)
+    _refusing(monkeypatch, "unlink", 1, only="cmd-")
+    with pytest.raises(HarnessError) as e:
+        ch.send("ping", timeout=5, alive=lambda: False)
+    assert e.value.code == EXIT_ENGINE and "engine is not running" in e.value.message
+
+
+@pytest.mark.parametrize("call, only", [("unlink", "res-"), ("rename", "cmd-")])
+def test_where_busy_files_do_not_refuse_a_refused_delete_or_rename_is_tampering(
+        tmp_runtime, monkeypatch, call, only):
+    # round-2 TAF-12: the Linux arm of the two helpers (only the read's was held)
+    ch = channel.Channel(_sess())
+    ch.dir.mkdir(parents=True)
+    _refusing(monkeypatch, call, 1, only=only)
+    monkeypatch.setattr(channel.platform, "BUSY_FILES_REFUSE", False)
+    if call == "unlink":
+        with FakeBridge(ch.dir), pytest.raises(HarnessError) as e:
+            ch.send("ping")
+    else:
+        with pytest.raises(HarnessError) as e:
+            ch.send("ping", timeout=0.3, alive=lambda: True)
+    assert e.value.details == {"kind": channel.TAMPERED}
+
+
+def test_the_fake_bridge_reads_a_command_it_ignores_only_once(tmp_path, monkeypatch):
+    # Windows VM, 2026-11-17: the fake read a command it was told to ignore on every turn of
+    # its loop (each 10 ms), and on Windows a rename and an open of one file refuse each
+    # other. When a withdraw met one of those reads, either the timeout was journalled
+    # "taken_unknown" (once, in a run of the whole tier) or the fake's thread ended (5 of
+    # 140 runs). The real bridge never opens a command it has not claimed by rename.
+    reads = []
+    peek = FakeBridge._peek
+    monkeypatch.setattr(FakeBridge, "_peek",
+                        staticmethod(lambda f: reads.append(f.name) or peek(f)))
+    folder = tmp_path / "channel"
+    with FakeBridge(folder, script={"autopilot": "ignore"}) as fake:
+        waiting = folder / "cmd-000001.json"
+        tmp = folder / "writing.tmp"
+        tmp.write_text(json.dumps({"seq": 1, "cmd": "autopilot", "args": {}}), encoding="utf-8")
+        tmp.rename(waiting)
+        deadline = time.monotonic() + 5
+        while not reads and time.monotonic() < deadline:      # bounded
+            time.sleep(0.01)
+        time.sleep(0.2)                    # some twenty more turns of the fake's loop
+    assert reads == ["cmd-000001.json"]
+    assert fake.seen == [] and waiting.exists()             # still never taken

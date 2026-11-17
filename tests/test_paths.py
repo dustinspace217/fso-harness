@@ -7,6 +7,7 @@ from fsoctl import paths
 from fsoctl.errors import EXIT_NOT_FOUND, EXIT_USAGE, HarnessError
 
 
+@pytest.mark.linux
 def test_runtime_root_uses_override_and_is_private(tmp_runtime):
     root = paths.runtime_root()
     assert root == tmp_runtime

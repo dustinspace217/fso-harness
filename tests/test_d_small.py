@@ -167,6 +167,7 @@ def test_vp_extract_copies_in_chunks(tmp_path, monkeypatch):
 
 # ---- CR-7: concurrent screenshots never share a file name -------------------------------------
 
+@pytest.mark.linux
 def test_two_screenshots_get_distinct_names_even_before_either_is_written(tmp_runtime,
                                                                           monkeypatch):
     s = _s()

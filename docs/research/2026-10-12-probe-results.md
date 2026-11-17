@@ -378,14 +378,18 @@ posted events from START_GAME. One caveat: a state entered and left inside a pop
   about 10 s on software GL; the 351 s of the first engine run was the 300 s timeout above.
 - Standalone web panel (TCP 8080, inside the match only): HTTP basic auth with multi.cfg's
   `+webapi_username`/`+webapi_password`, engine defaults `admin`/`admin` (multi_options.h:86);
-  the harness keeps the defaults. `GET /api/1/player` showed the joined player once (at
+  the harness kept the defaults until 2026-10-17 (now a random login per standalone, see below).
+  `GET /api/1/player` showed the joined player once (at
   ~40 s into a mission) and `[]` for 60 s of polling in two other runs, so the panel is not
   used as test evidence.
   `GET /api/1/netgameInfo` returned `"mission": "", "maxPlayers": 0, "gameState": 1` and
   `GET /api/1/mission` `"time": 0.0` for 30 s while a mission was running with a player in it:
   on Linux these copies (`webapi_netgameInfo`, `webui_missiontime`, stand_gui-unix.cpp:365,
   :790) do not seem to be refreshed in a standalone game. Candidate upstream finding for the
-  multiplayer list; not pursued here. `GET /` gives 500 (no `+webui_root`), expected.
+  multiplayer list; not pursued here. `GET /` gives 500 with no `+webui_root`. Every harness
+  standalone now gets `+webui_root <run folder>/webui`, an empty 0700 folder (QA SA-1,
+  2026-10-17, measured inside a private match): `/` then gives an empty listing, `/api/1/auth`
+  401 without and 200 with the login, and paths outside the folder give 404.
 - The spike script's `kill $SRV` killed a subshell, not the nsenter'd standalone inside it;
   three servers from the spikes kept running for ~30 min inside their dead holders' namespaces
   (containment held: nothing on the real network). Fixed with `exec`; the harness itself stops
@@ -460,3 +464,90 @@ release, llvmpipe, retail FS2 data, Easy. Drill = `examples/pilot/` (a scripted 
 - **The `lua` pre-send check does not see handle fields.** `ba.getCurrentPlayer().Stats.
   MissionPrimaryFriendlyHits` (the real name is `MissionPrimaryFriendlyHit`) passed the check and
   aborted the engine ("Could not find index ... in type 'scoring_stats'", session s69977995).
+
+## 23. Windows: first real sessions (cross-platform Plan B, 2026-11-16, VM, FSO 26.2.0)
+
+Found by launching through `fsoctl` in the Windows 11 VM (software OpenGL, retail data).
+Source references are to the 26.2.0 tree.
+
+- **`cf.renameFile` cannot replace an existing file on Windows.** `cf_rename` is the C
+  library's `rename()` (cfile.cpp:542-565), which on Windows fails when the target exists. The
+  bridge rewrote its heartbeat by renaming a temp file over `ready.json`: the first session
+  wrote it once and never again (session sbf9632cb: `ready.json` stayed at frame 1 while
+  `ready.json.tmp` kept changing). The bridge now deletes the target and renames again when
+  the first rename left the temp file behind; Linux never takes that path.
+- **`-no_unfocused_pause` is ignored when in-game options are on, which is the default.**
+  `pause_if_unfocused()` (freespace.cpp:4758-4765) returns the option `Game.UnfocusedPause`
+  when `Using_in_game_options` is true (mod_table.cpp:1924 sets that default) and reads the
+  command-line switch only otherwise. The option is read from `data/<first mod>_settings.ini`
+  under the prefs folder (osregistry.cpp:878-972; OptionsManager.cpp:59-65: key
+  `Section.Name`, value as JSON). With nothing set, a single-player mission pauses as soon
+  as its window is not the foreground one (`game_poll`, freespace.cpp:4772-4788): session
+  s7f975c09 logged `GS_EVENT_PAUSE_GAME` one second into the mission and sat in
+  `GS_STATE_GAME_PAUSED`. The harness now writes `[Game] UnfocusedPause=false` into that
+  file for Windows sessions. Linux sessions were never affected: the window is the only one
+  on its Xvfb display and stays in front.
+- **The engine closes cleanly on a posted `WM_CLOSE`.** `fsoctl stop` (the runner posts it
+  to the engine's window) ended session sbf9632cb with exit code 0.
+- **Mesa's software OpenGL shows as `libgallium_wgl.dll`** in the engine's module list
+  (launch result of both sessions).
+- **A UDP bind on every address makes Windows Firewall add a rule for the program and ask
+  the user about it.** The first `fsoctl launch` test-bound the game port as the Linux port
+  test does (IPv6 dual stack, `::`). The firewall log (event 2097) shows two block rules for
+  `python.exe` added at 22:45:09, one second after session sbf9632cb's folder was created,
+  and the question was on the desktop in the screenshot taken afterwards. Repeated with `pythonw.exe`, which had no rule: two rules at
+  the second of the bind (23:12:50). The port test on Windows therefore binds nothing and
+  reads the socket table (`launcher.port_free`). The engine's own bind gets the same
+  treatment once per engine file (the log holds such entries for five engine files); the
+  harness adds no firewall rule to prevent it.
+- **A fatal Lua API error ends the Windows engine with exit code 0xE06D7363 and leaves a
+  minidump beside the executable.** Under `-noninteractive` the error is thrown as
+  `LuaErrorException` (osapi/dialogs.cpp:203-206) and nothing catches it. On Linux that is
+  SIGABRT (section 19); on Windows the engine's unhandled-exception filter runs first
+  (crashdump.cpp:58-62, installed at freespace.cpp:8212), writes
+  `<exe name without .exe>_YYYYMMDD_HHMMSS.mdmp` with a UTC stamp from `GetSystemTime`
+  (crashdump.cpp:31-38), logs "CRASH DETECTED!!!", and lets the exception end the process.
+  Session s8bc8c2e3: exit code 3765269347, dump of 515,757 bytes, no window, no hang. The
+  writer returns without a dump if it cannot create the file (crashdump.cpp:40-42), so an
+  engine in a folder it may not write to leaves none.
+- **The dump records which process wrote it; cdb needs `.ecxr` and a decimal count.** The
+  dump's MiscInfo stream held the engine's pid (9776). `cdb -z <dump> -c "kb 30; q"` showed
+  three frames of the dump writer; `.ecxr` first gives the crash's own stack; a bare `30` is
+  hex to cdb (38 frames came back), `0n30` is thirty. The Windows SDK's installer puts
+  `cdb.exe` under `Windows Kits\10\Debuggers\x64` and does not add it to PATH. Started
+  without `-c`, cdb ran an `ntsd.ini` from its working folder; with `-c` it did not (a
+  `-c` echo and a `-cf` script were the controls that the output shows such a line).
+- **Windows sessions do not get the "new settings file" popup.** A fresh preferences
+  folder shows it on Linux (section 0 and the stage tests). The harness writes that file for
+  Windows sessions before the engine starts (the pause setting above), so the engine has
+  nothing to announce; the first popup there is the new pilot's tip (stage tests in the VM,
+  2026-11-17).
+- **`netstat -ano -p UDP` lists IPv4 sockets only.** A UDP socket bound to `[::1]:7852` with
+  IPV6_V6ONLY set was absent from it and present in `-p UDPv6` and in plain `netstat -ano`.
+  The engine's dual-stack game socket shows in both (`0.0.0.0:7808` under `-p UDP`). The
+  owner lookup reads the plain listing, so a holder in either family counts.
+- **FSO on Windows cannot keep its preferences under a path with a letter outside ASCII.**
+  `getPreferencesPath` (`code/osapi/osapi.cpp`) reads `FSO_PREFERENCES_PATH` with `getenv`,
+  walks it as UTF-8 and, on Windows only, treats any code point above 127 as unsupported
+  ("we currently do not support Unicode paths"): a warning and its portable mode, or an
+  error if the bytes are not UTF-8. Probe 12 (2026-11-17): with the run folder under
+  "José" the engine never started the bridge and did not close when asked; a space and an
+  apostrophe were fine. `launch` refuses such a runtime root (`launcher._check_run_folder`).
+- **A file another process has open cannot be renamed over on Windows, and a read can fail
+  while it is being replaced** (probe 11, 2026-11-17: 31 to 33% of renames and about 10% of
+  reads under two looping readers; none on Linux). Session records are written and read
+  with a bounded retry there (`session._while_busy`, `_read_record`).
+- **An exclusive create on Windows follows a link whose target does not exist** and creates
+  the target (measured 2026-11-17 through `win_safefs.write_atomic`; a link to an existing
+  file is refused). The Windows file guard therefore uses a random temp name.
+- **`EnumWindows` returns zero with error code 0** on a listing that worked, while a desktop
+  is polled for a window still being made. **An ended process can still be opened for a
+  moment and still gives its start time. Asking about a process id nobody has fails with
+  error 87.** All three decide how `win_desktop` and `win_procs` read a failed call.
+- **A job's name is known only inside the Windows login that made it** (2026-11-17: from an
+  ssh login a live desktop session's job was "not found"; its runner's process id and start
+  time could be read). The launcher asks about the recorded runner before it calls a
+  session gone (`launcher._gone`).
+- **The `lua` pre-check works on Windows once `api_docs` has run for the build**: the call
+  that ended the engine in the first crash test (`ba.noSuchFunctionAtAll()`) was refused
+  before sending on 2026-11-17. The bracket form the refusal names still reaches the engine.

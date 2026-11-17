@@ -1,0 +1,82 @@
+# Unit tier on three operating systems (cross-platform Plan A, Task 4; Plan B, Task 11).
+# Linux and Windows gate: their jobs must pass. On Windows that is the part of the unit tier
+# that applies there (tests/conftest.py leaves the Linux-only files uncollected and says how
+# many) plus the tests that make real Win32 calls (tests/winlive). macOS takes a census
+# (probes/xplat/census.py) of which tests already pass; it never fails the run until macOS
+# is supported.
+name: tests
+on:
+  push:
+  workflow_dispatch:
+
+# The jobs only read the repository, whatever the repo's default token setting is (plan A QA SA).
+permissions:
+  contents: read
+
+jobs:
+  linux-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      # bubblewrap and keyutils by name: the sandbox tests need bwrap and keyctl, and the
+      # runner's images do not all carry both (one image version failed for want of keyctl).
+      - run: sudo apt-get update && sudo apt-get install -y luajit xvfb x11-utils bubblewrap keyutils
+      # Ubuntu 24.04 blocks unprivileged user namespaces (AppArmor), which `--network private`
+      # and private matches need (README: Requirements); the runner tests use them.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # ruff by exact version: its preview mode is on (ruff.toml), and a new release can
+      # change what stable rules report with no change here (QA Plan B, CR-19).
+      - run: pip install -e . pytest ruff==0.16.10
+      # The project's lint gate (Power of Ten rule 10) in CI, not only a local habit (QA TA-13).
+      - run: ruff check .
+      - run: python -m pytest -q
+      - name: Show the logs the harness wrote during failed tests
+        if: failure()
+        run: |
+          find /tmp/pytest-of-* -name "*.log" -size +0 2>/dev/null | head -20 | while read -r f; do
+            echo "== $f"; tail -n 15 "$f"
+          done
+
+  windows-unit:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      # No LuaJIT step: Chocolatey has no package named luajit, and an unregistered name
+      # could be squatted (plan A QA SA-3). The bridge's Lua tests are skipped here for
+      # want of it and run on Linux; the Lua they test is the same file on every OS.
+      - run: pip install -e . pytest
+      - run: python -m pytest -q
+      # Real Win32 calls: Job Objects, a hidden desktop, window capture, the stop request.
+      - run: python -m pytest -q -m winlive tests/winlive
+
+  census:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - name: LuaJIT (macOS)
+        if: runner.os == 'macOS'
+        run: brew install luajit
+        continue-on-error: true
+      - run: pip install -e . pytest
+      - run: python probes/xplat/census.py census-out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: census-${{ runner.os }}
+          path: census-out/

@@ -491,3 +491,12 @@ def test_runner_fails_the_record_when_the_match_prefix_cannot_be_built(tmp_runti
     assert proc.returncode == 1 and "Traceback" not in proc.stderr, proc.stderr[-400:]
     assert rec.status == "failed", rec.status
     assert "m0a1b2c3d" in json.dumps(dataclasses.asdict(rec))
+
+
+def test_runner_makes_itself_the_first_oom_victim():
+    # in a child, so the test process keeps its own score
+    out = subprocess.run([sys.executable, "-c",
+                          "from fsoctl import runner; print(runner.make_first_oom_victim())"],
+                         capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "1000"
+

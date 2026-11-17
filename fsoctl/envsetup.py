@@ -74,6 +74,21 @@ def child_env(base: dict, display: str | None, prefs: Path, renderer: str, run: 
     return env
 
 
+def child_env_windows(base: dict, prefs: Path) -> dict:
+    """Return a copy of `base` for an engine started on Windows: FSO_PREFERENCES_PATH is the
+    session's prefs folder (so pilots, settings and logs land there and not in the user's
+    %APPDATA%), and nothing else is changed.
+
+    WHY nothing else (plan B call 3): none of the Linux pins has a Windows counterpart to
+    set. There is no display variable (the desktop is chosen when the process starts), no
+    session bus, and no private home is given: a Windows session is not sandboxed. The
+    renderer is whatever OpenGL the machine provides; software rendering is not forced.
+    """
+    env = dict(base)
+    env["FSO_PREFERENCES_PATH"] = str(prefs).rstrip("\\/") + "\\"
+    return env
+
+
 def for_kind(env: dict, kind: str) -> dict:
     """Return `env` (changed in place) with what a session of this kind ("game" | "qtfred") needs.
 

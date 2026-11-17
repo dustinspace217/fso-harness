@@ -24,7 +24,7 @@ MP_MISSION = os.environ.get("FSO_TEST_MP_MISSION", "M-01")     # a retail coop m
 
 @pytest.fixture
 def live_match(tmp_runtime):
-    m = match.create(label="test")
+    m = match.create(label="test", network="private")
     try:
         yield m
     finally:
@@ -86,6 +86,19 @@ def test_standalone_listens_only_inside_the_match(engine_env, live_match):
         # the tracker flag of a PILOT lives in data/players/*.json (QA TA-11); none written here
         # because a standalone has no pilot, and the client test below checks its own
         assert not list(prefs.rglob("players/*.json"))
+        # The web panel (plan A QA SA-1, TA-11), asked from inside the match: never the engine's
+        # admin/admin, its own login works, and its web folder is an empty one of its own, so
+        # nothing outside that folder is served.
+        panel = r["web_panel"]
+        assert panel and panel["port"] == 8080
+        mine = f"{panel['user']}:{panel['password']}"
+        for path, login, want in (("/api/1/auth", "admin:admin", "401"),
+                                  ("/api/1/auth", mine, "200"),
+                                  ("/etc/hostname", None, "404"), ("/etc/", None, "404")):
+            argv = ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "5"]
+            argv += ["-u", login] if login else []
+            got = match.run_inside(m, [*argv, f"http://127.0.0.1:8080{path}"]).stdout
+            assert got == want, (path, login, got)
     finally:
         launcher.stop(r["id"])
 
@@ -147,13 +160,10 @@ def test_mission_starts_with_almission(engine_env, live_match):
         hb = wait_hb(cli["id"], lambda h: (h.get("mission_time") or 0) >= 1, "mission time",
                      timeout=60)
         assert hb["mission"].lower().startswith(MP_MISSION.lower())
-        # The server's side of the same fact, read from its web panel INSIDE the match (spec 5.5:
-        # agents reach the panel through the match, never from the real network). The panel
-        # wants HTTP basic auth with multi.cfg's +webapi_username/+webapi_password; the engine's
-        # defaults are admin/admin (multi_options.h:86) and the harness keeps them: the panel is
-        # reachable only inside the match.
-        # Not asserted: the standalone's web panel. Its /api/1/player, /api/1/netgameInfo and
-        # /api/1/mission copies were empty or stale for a minute of gameplay in three runs
+        # Not asserted: the standalone's web panel (its login is per session since plan A Task 3;
+        # see test_standalone_listens_only_inside_the_match). Its /api/1/player,
+        # /api/1/netgameInfo and /api/1/mission copies were empty or stale for a minute of
+        # gameplay in three runs
         # (probe-results 21.4), so it is not an instrument. A client in GS_STATE_GAME_PLAY with
         # mission time advancing already needs the standalone (the game master) to have synced,
         # counted down and started the same mission.
@@ -245,23 +255,34 @@ def test_client_joins_player_host(engine_env, live_match):
         launcher.stop(host["id"])
 
 
-def test_ordinary_sessions_are_private_by_default_and_real_is_opt_in(engine_env, tmp_runtime):
-    """DEF-MP-03 (Option A): an ordinary single-player session no longer binds the engine's UDP
-    port on the real network; --network real is the documented opt-out and does."""
+def _held_by(port: int, pid: int) -> bool:
+    """True when `pid` holds a UDP socket on `port` on the REAL network."""
+    out = subprocess.run(["ss", "-H", "-lunp", f"sport = :{port}"], capture_output=True,
+                         text=True, check=False).stdout
+    return f"pid={pid}," in out
+
+
+def test_ordinary_sessions_are_real_by_default_and_private_is_opt_in(engine_env, tmp_runtime):
+    """Plan A Task 1 (owner, 2026-10-16: "Real network. I never meant to change this about how
+    the engine works."): an ordinary session binds its own UDP port on the real network, as the
+    stock game does; --network private is the opt-in and binds nothing on the host."""
     _, fso = engine_env
-    before = _listeners(7808)
     sid = launch_in_mission(fso)
     try:
-        assert session.load(sid).network == "private"
-        assert _listeners(7808) == before
+        sess = session.load(sid)
+        assert sess.network == "real" and sess.port
+        assert _held_by(sess.port, sess.engine_pid)
     finally:
         launcher.stop(sid)
-    sid = launch_in_mission(fso, network="real")
+    sid = launch_in_mission(fso, network="private")
     try:
-        assert _listeners(7808) == before + 1
+        sess = session.load(sid)
+        assert sess.network == "private" and sess.port is None
+        out = subprocess.run(["ss", "-H", "-lunp"], capture_output=True, text=True,
+                             check=False).stdout
+        assert f"pid={sess.engine_pid}," not in out          # nothing of it on the host
     finally:
         launcher.stop(sid)
-    assert _listeners(7808) == before
 
 
 def _window_pid(display: str, wid: str) -> str:
@@ -279,8 +300,9 @@ def test_private_session_display_is_reachable_from_the_host(engine_env, tmp_runt
     mid = None
     sids = []
     try:
-        mid = match.create("display reach").id
-        sids.append(launch_in_mission(fso))
+        # Private on purpose: the cell under test is the namespace exec chain (plan A QA TA-1).
+        mid = match.create("display reach", network="private").id
+        sids.append(launch_in_mission(fso, network="private"))
         sids.append(launcher.launch(LaunchRequest(binary=str(fso), mods=MODS, skip_movies=True,
                                                   dismiss_popups=True, match=mid, role="client",
                                                   pilot_mode="create", pilot_name="Alpha"))["id"])

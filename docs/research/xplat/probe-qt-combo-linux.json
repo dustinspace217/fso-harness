@@ -1,0 +1,71 @@
+{
+ "os": "linux",
+ "label": "",
+ "qt_version": "6.12.0",
+ "target": "GTF Hercules",
+ "routes": [
+  {
+   "route": "XTEST Down, no focus call (control)",
+   "took": false,
+   "starts_at": 0,
+   "error": null,
+   "qt_index": 0,
+   "qt_focus": null
+  },
+  {
+   "route": "AT-SPI grabFocus + XTEST Down",
+   "took": false,
+   "starts_at": 0,
+   "error": "RuntimeError: grabFocus returned false",
+   "qt_index": 0,
+   "qt_focus": null
+  },
+  {
+   "route": "xdotool windowfocus + AT-SPI grabFocus + XTEST Down",
+   "took": false,
+   "starts_at": 0,
+   "error": "RuntimeError: grabFocus returned false",
+   "qt_index": 0,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "click at the combo's AT-SPI position + XTEST Down, Return",
+   "took": true,
+   "starts_at": 0,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipClassCombo"
+  },
+  {
+   "route": "click at the combo's AT-SPI position + click at the item's",
+   "took": true,
+   "starts_at": 0,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipClassCombo"
+  },
+  {
+   "route": "xdotool windowfocus + AT-SPI ShowMenu action + XTEST Down, Return",
+   "took": true,
+   "starts_at": 0,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": "shipNameEdit"
+  },
+  {
+   "route": "AT-SPI ShowMenu action + click at the item's AT-SPI position",
+   "took": true,
+   "starts_at": 0,
+   "error": null,
+   "qt_index": 1,
+   "qt_focus": ""
+  }
+ ],
+ "notes": [],
+ "routes_that_took": [
+  "click at the combo's AT-SPI position + XTEST Down, Return",
+  "click at the combo's AT-SPI position + click at the item's",
+  "xdotool windowfocus + AT-SPI ShowMenu action + XTEST Down, Return",
+  "AT-SPI ShowMenu action + click at the item's AT-SPI position"
+ ]
+}

@@ -1,0 +1,6 @@
+MSBuild version 17.14.60+43b635718 for .NET Framework
+
+  Building Custom Rule C:/xplat/msvc/CMakeLists.txt
+cl : command line  warning D9002: ignoring unknown option '/Ob9' [C:\xplat\msvc\build\bad_option.vcxproj]
+  clean.cpp
+  bad_option.vcxproj -> C:\xplat\msvc\build\Release\bad_option.exe

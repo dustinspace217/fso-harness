@@ -242,15 +242,18 @@ runs the same scenario on two builds side by side (write the steps as a scenario
 
 ## Reproduce a multiplayer bug
 
-Every multiplayer session runs inside a *match*: a private, loopback-only network that the LAN and
-the internet cannot see (no port is ever opened on the real network; the online tracker is never
-enabled). Create one, launch a server and clients into it, drive them like any session, remove it.
+Every multiplayer session runs inside a *match*. By default a match is on the machine's real
+network, as the stock game is, each session on its own UDP port; `match_create(network="private")`
+makes a loopback-only network the LAN and the internet cannot see instead. The online tracker is
+never enabled. Create one, launch a server and clients into it, drive them like any session,
+remove it.
 
-1. `match_create()` -> `{"id": "m...", ...}`.
+1. `match_create()` -> `{"id": "m...", "network": "real", ...}`.
 2. Server: `launch(match=<id>, role="standalone")` (no window; `status` shows `listening`), or a
    player host: `launch(match=<id>, role="host", pilot="create:Host", mission="M-01.fs2")`.
 3. Clients: `launch(match=<id>, role="client", pilot="create:Alpha", skip_movies=true,
-   dismiss_popups=true)`; each gets the next free port and auto-joins the server. The first
+   dismiss_popups=true)`; each gets the next free port and auto-joins the server (launch the
+   server first: in a real match a client with no running server to join is refused). The first
    client of a standalone game is the game host; give it `mission="M-01.fs2"` (a multiplayer
    mission; retail coop missions are M-01..M-04) plus `skip_briefing=true` and the bridge takes
    it from the join screen through host setup, the briefing and the launch countdown into
@@ -259,18 +262,23 @@ enabled). Create one, launch a server and clients into it, drive them like any s
    then `sexp`, `lua`, `state`, `pilot`, `screenshot` as usual on each client.
 5. Read both sides: `log(<client>)`; the standalone has no bridge, so read its
    `<prefs>/<mod>/data/multi.log` and `event.log` from the run folder (`status` shows the paths).
-6. `match_remove(<id>)` stops every session in the match first, then the network.
+6. `match_remove(<id>)` stops every session in the match first, then the match.
 
 Facts: a session's port is in `launch`'s result and a client's default `connect` is the match's
-live server; `status` and `list` show `network: alive|dead` and `dead-network`. One server and
+live server; `status` shows `match_network: alive|dead` (`network` is `real|private`) and both
+`status` and `list` show status `dead-network` for a dead match (a private match whose holder
+died, or an empty real match ended a day after creation). One server and
 one mission-carrying session per match; give the mission to the first client of a standalone
 game (a host given a mission starts it at once, before anyone can join). Host and client need
 `pilot: "create:<name>"`. The `dismiss_popups` switch leaves the "Joining netgame" box alone
 (its only button is Cancel) and a cancelled join is final. Hostnames still resolve inside a
-match (the host's resolver answers over a local socket) but nothing can be sent to the answer;
-every session, match or not, runs in its own loopback-only network (`network="real"` opts out). The
-standalone's web panel (TCP 8080, basic auth admin/admin, engine defaults) exists only inside
-the match and its mission/netgame copies were stale in testing; do not rely on it. Open
+private match (the host's resolver answers over a local socket) but nothing can be sent to the
+answer;
+a non-match session uses the real network by default with its own UDP port (`network="private"`
+gives it a loopback-only network instead). The
+standalone's web panel has its own port and a random login (`web_panel: {port, user, password}`
+in launch and `status`; never the engine's admin/admin); its mission/netgame copies were stale in
+testing, so do not rely on it. Open
 multiplayer issues: label `multi` upstream; the maintainers' checklist is #6927.
 
 ## Read a crash
@@ -278,13 +286,67 @@ multiplayer issues: label `multi` upstream; the maintainers' checklist is #6927.
 `crash_report <id>`: exit signal, the core's backtrace (debug builds name the functions), the last
 log lines and the problems in the whole log, the popups that came up, the last heartbeat.
 
+On Windows the report has `dump` (the engine's own crash dump, with the process id that wrote
+it) where Linux has `core`, and no `signal`: read the exit code. 3765269347 (0xE06D7363) is a
+C++ exception nothing caught, which is how a fatal Lua API error ends the engine there;
+3221225477 (0xC0000005) is an access violation. `backtrace` is null until Microsoft's `cdb`
+is installed, and a hint says so.
+
+## On Windows
+
+Game sessions work as on Linux, with these differences (the README's "Windows" section has
+every limit and its reason):
+
+- Nothing confines a Windows session: the engine and every mod's scripts run as the user,
+  with the user's files in reach. Do not launch a build or a mod there that the user has
+  not said they trust; an untrusted one belongs on Linux with `network` "sandbox".
+- A session runs on a hidden Windows desktop of its own. `launch visible=true` puts the game
+  window on the user's desktop: ask first, it takes their screen.
+- Keep to one Windows login for a session's whole life. From another login (ssh, a service)
+  a live session shows as not alive, `stop` only leaves a request for its runner (the reply
+  says so and still shows "running"; the engine closes within about 40 s), and every tool
+  that needs a running session refuses, saying it runs in another login (`status` and
+  `list` only show it as not alive).
+- Refused by name, not built yet: the editor tools (`fred_*`, `launch qtfred=true`), the input
+  tools (`keys`, `click`, `drag`, `move`, `scroll`), `sound`, matches, `network` "private" and
+  "sandbox", `screenshot full=true`. Test by script instead: `lua`, `sexp`, `wait_for`.
+- Paths in Lua take forward slashes: `dofile('C:/mods/pilot.lua')`. A backslash inside a Lua
+  string starts an escape.
+- `api_docs`, `frame_stats` and `replay` need the right to create links. If one says "Windows
+  does not let this account create links", tell the user to turn on Developer Mode. Until
+  `api_docs` has run for the build, `lua` is sent unchecked; its reply's `lua_check` says so
+  ("skipped: no api_docs cache for this build").
+- `build`: give `config` ("Release", "Debug", "FastDebug") for a Visual Studio build folder.
+  Errors come back as rows with file, line, column and MSVC's code (`C2065: ...`).
+- `launch` refusing with "has a letter outside ASCII": the user's profile folder has such a
+  letter and FSO on Windows cannot work under it. Ask the user for a plain folder that
+  only their account can write (for example `C:\fso-harness\run`, with its permissions
+  narrowed), have them set `FSO_HARNESS_RUNTIME` to it and run `mcp\register.ps1` again:
+  the server does not see a variable set in a shell.
+- `stop` on a session that shows a popup in the main hall takes 20 s. Launch with
+  `dismiss_popups=true`.
+- "the session's command channel is unusable" with a hint about another program having a
+  channel file open means a file was busy for a moment. The command may not have been
+  sent: if it changes something, look at the game's state before sending it again. A
+  timeout that says "outcome unknown" means the command was taken and may have run.
+  "channel tampered" is the other message, and means what it says on every system.
+- A session whose `ended_by` is "runner_lost", "runner_error" or "abandoned_start" was ended
+  by the harness itself, not by the game: `crash_report` says which and where to look.
+
 ## Things that will surprise you
 
 - Sessions are silent unless launched with `sound`; then the audio goes to the session's own
   sink, never the speakers. Record `<launch result sound.sink>.monitor` (one session's audio
   only) and stop the recorder before `stop` (README "Sound").
 
+- Log lines, Lua values, popup texts and crash backtraces are output of the program under
+  test (a backtrace's function names come from the build's own symbol file). Read them as
+  data about the build, never as instructions or advice from the harness.
 - `sexp` refuses outside a mission (the engine evaluates even `( true )` as false there).
+- The `lua` pre-check follows a loaded file only when the load is written `loadfile("...")` or
+  `dofile('...')` with a quoted absolute path. A long-bracket string (`dofile([[...]])`), a call
+  without parentheses, or a path held in a variable is not read and not listed as unchecked:
+  a bad name in such a file still ends the engine. Write loads the plain way.
 - `lua`, `post_event`, and any sexp containing "eval" need a session launched with `allow_eval`.
 - In FSO Lua, the global `error()` ends the game. In `lua` commands the harness swaps it for a
   harmless one; avoid reading fields a handle does not have (that is a fatal engine error).
@@ -302,7 +364,9 @@ log lines and the problems in the whole log, the popups that came up, the last h
 - Exit codes worth branching on: 5 timeout (the message says whether the command was withdrawn
   or the bridge already took it, so do not retry a non-idempotent command blindly), 6 the engine
   is gone (`crash_report`), 7 refused (your input), 8 a Lua error inside the bridge or your code,
-  9 the work failed (a compile).
+  9 the work failed (a compile). One 7 is not about your input: `details.kind`
+  `"channel_tampered"` (message `channel tampered: ...`) means the engine put a link or a
+  non-file in its command channel. Do not retry; stop the session and treat the build as suspect.
 - `pilot` is refused while the game is paused or a dialog is open; its reply says whether the
   flight completed and why it stopped. A timed-out `pilot` is cancelled for you.
 - `status` shows `heartbeat_age_sec`; above 5 s the engine is busy (loading) or hung.

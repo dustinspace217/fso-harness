@@ -12,12 +12,14 @@ from . import launcher, session
 from .cli import register
 from .errors import EXIT_ENGINE, EXIT_USAGE, HarnessError
 from .launcher import LaunchRequest
+from .platform import safefs
 
 _SEPARATOR = re.compile(r"^-{20,}\s*$")
 _MODEL_TOTAL = re.compile(r"^Model total (\d+)")
 _LOD = re.compile(r"^LOD (\d+)")
 _LOD_TOTAL = re.compile(r"^TOTAL: (\d+)")
 _LOD_DESTROYED = re.compile(r"^TOTAL destroyed faces (\d+)")
+_SPEW_CAP = 256 << 20    # bytes: the largest pofspew.txt read (a big mod's is a few MB)
 
 
 def _parse_block(lines: list[str]) -> dict | None:
@@ -66,11 +68,20 @@ def model_info(mods: list[str], name_filter: str | None = None, binary: str | No
         raise HarnessError(EXIT_USAGE, "no engine binary", "pass --binary or export FSO_BIN")
     sess = launcher.run_to_exit(LaunchRequest(binary=exe, mods=mods, extra_args=["-pofspew"]),
                                 timeout)
-    found = sorted(session.prefs_dir(sess).rglob("pofspew.txt"))
-    if not found:
+    # Found and read through safefs: the engine wrote this folder (QA 2026-11-13 SA-2), so the
+    # walk enters no link and the read takes only a regular file of bounded size.
+    prefs = session.prefs_dir(sess)
+    rel = safefs.find(prefs, None, "pofspew.txt")
+    try:
+        text = safefs.read(prefs, rel, _SPEW_CAP)[0].decode(errors="replace") if rel else None
+    except OSError as e:
+        raise HarnessError(EXIT_ENGINE, f"pofspew.txt cannot be read: {e}",
+                           "it is not a plain file of a sensible size") from None
+    if text is None:
         raise HarnessError(EXIT_ENGINE, "the engine wrote no pofspew.txt",
                            f"see `fsoctl log {sess.id}` (exit {sess.exit_info})")
-    models = parse(found[0].read_text(errors="replace"))
+    found = [prefs / rel]
+    models = parse(text)
     if name_filter:
         models = [m for m in models if name_filter.lower() in m["name"].lower()]
     info = sess.exit_info

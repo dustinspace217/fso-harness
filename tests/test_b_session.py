@@ -63,6 +63,7 @@ def test_update_returns_the_saved_session(tmp_runtime):
     assert out.status == "running" and session.load(s.id).status == "running"
 
 
+@pytest.mark.linux
 def test_audit_survives_cleanup_of_the_run_folder(tmp_runtime, tmp_path, monkeypatch):
     state = tmp_path / "state"
     monkeypatch.setenv("FSO_HARNESS_STATE", str(state))
@@ -76,6 +77,7 @@ def test_audit_survives_cleanup_of_the_run_folder(tmp_runtime, tmp_path, monkeyp
     assert stat.S_IMODE(os.stat(state).st_mode) == 0o700
 
 
+@pytest.mark.linux
 def test_state_dir_follows_xdg_then_home(tmp_path, monkeypatch):
     monkeypatch.delenv("FSO_HARNESS_STATE", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xs"))
@@ -93,6 +95,7 @@ def test_next_seq_counts_up_from_one(tmp_runtime):
     assert [session.next_seq(s) for _ in range(3)] == [1, 2, 3]
 
 
+@pytest.mark.linux
 def test_runtime_root_needs_xdg_runtime_dir(monkeypatch):
     monkeypatch.delenv("FSO_HARNESS_RUNTIME", raising=False)
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
@@ -102,6 +105,7 @@ def test_runtime_root_needs_xdg_runtime_dir(monkeypatch):
     assert "XDG_RUNTIME_DIR" in e.value.message and e.value.hint
 
 
+@pytest.mark.linux
 def test_runtime_root_under_xdg_creates_parents(tmp_path, monkeypatch):
     monkeypatch.delenv("FSO_HARNESS_RUNTIME", raising=False)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "a" / "b"))

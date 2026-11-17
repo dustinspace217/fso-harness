@@ -16,7 +16,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import launcher, paths, session, vp, xinput, xwin
+from . import launcher, paths, platform, session, vp, xinput, xwin
 from .cli import register
 from .errors import EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_TIMEOUT, EXIT_USAGE, HarnessError
 
@@ -138,6 +138,7 @@ def open(mission: str, mods: list[str] | None = None, binary: str | None = None,
     If anything fails after qtFRED was launched, the session is stopped and its id goes into the
     error's details, so a failed open never leaves an editor running unseen (QA SL-9, CR-5).
     """
+    platform.needs_linux("the fred_open verb", "Plan C")
     mods = mods or []
     exe = binary or os.environ.get("QTFRED_BIN")
     if not exe:
@@ -183,6 +184,7 @@ def save(sid: str) -> dict:
     "saved" waits for the size to settle after the file changes: the mtime moves at qtFRED's
     first write, before the file is complete, and fred_camera parses it right after (QA SF-17).
     """
+    platform.needs_linux("the fred_save verb", "Plan C")
     sess = launcher.require_running(sid)
     copy = Path(sess.mission or "")
     before = copy.stat().st_mtime_ns if copy.exists() else 0
@@ -207,6 +209,7 @@ def save(sid: str) -> dict:
 
 def camera(sid: str) -> dict:
     """Save, then return the camera position/orientation qtFRED wrote into the copy."""
+    platform.needs_linux("the fred_camera verb", "Plan C")
     r = save(sid)
     if not r["saved"]:
         raise HarnessError(EXIT_LAUNCH, "the pre-save error check opened instead of saving",
@@ -230,6 +233,7 @@ SELECTION_NOTE = (f"read by OCR from a fixed crop ({_STATUS_LINE}) of qtFRED's s
 
 def selection(sid: str) -> dict:
     """Return {"selection": status-line text (OCR), "screenshot", "note" (the OCR caveat)}."""
+    platform.needs_linux("the fred_selection verb", "Plan C")
     shot = xinput.screenshot(sid, crop=_STATUS_LINE)
     return {"selection": ocr(shot["path"]), "screenshot": shot["path"], "note": SELECTION_NOTE}
 
@@ -248,6 +252,7 @@ def select(sid: str, rect: tuple[int, int, int, int]) -> dict:
     Returns selection(sid) plus "changed" (False when the text never moved, which also happens
     when the rectangle selects exactly what was selected before) and "drags" (1 or 2).
     """
+    platform.needs_linux("the fred_select verb", "Plan C")
     x1, y1, x2, y2 = rect
     before = selection(sid)["selection"]
     for drags in (1, 2):
@@ -334,6 +339,7 @@ def _close_dialog(sess: session.Session, did: str) -> None:
 def check(sid: str) -> dict:
     """Run qtFRED's error check by saving; return clean, count, entries, count_matches_entries,
     screenshot, raw text."""
+    platform.needs_linux("the fred_check verb", "Plan C")
     r = save(sid)
     if r["saved"]:
         # qtFRED runs the check inside save and opens the dialog only when it finds errors

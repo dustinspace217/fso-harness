@@ -1,0 +1,72 @@
+Microsoft (R) Windows Debugger Version 10.0.26100.7705 AMD64
+Copyright (c) Microsoft Corporation. All rights reserved.
+
+
+Loading Dump File [C:\FS2\fs2_open_26_2_0_x64_SSE2-FASTDBG_20261117_072630.mdmp]
+User Mini Dump File: Only registers, stack and portions of memory are available
+
+
+************* Path validation summary **************
+Response                         Time (ms)     Location
+OK                                             C:\FS2
+Symbol search path is: C:\FS2
+Executable search path is: 
+Windows 10 Version 26100 MP (8 procs) Free x64
+Product: WinNt, suite: SingleUserTS
+Edition build lab: 26100.1.amd64fre.ge_release.240331-1435
+Debug session time: Mon Nov 16 23:26:31.000 2026 (UTC - 8:00)
+System Uptime: 0 days 0:42:09.930
+Process Uptime: 0 days 0:04:11.000
+................................................................
+.................
+This dump file has an exception of interest stored in it.
+The stored exception information can be accessed via .ecxr.
+(2630.9a0): C++ EH exception - code e06d7363 (first/second chance not available)
+For analysis of this file, run !analyze -v
+ntdll!NtGetContextThread+0x14:
+00007ffb`fe1d8334 c3              ret
+0:000> cdb: Reading initial command '.ecxr; k 0n30; q'
+rax=0000000000000000 rbx=000000000015e188 rcx=0000000000000000
+rdx=0000000000000000 rsi=0000000000000001 rdi=00000000e06d7363
+rip=00007ffbfb64569a rsp=000000000015e060 rbp=0000000000000004
+ r8=0000000000000000  r9=0000000000000000 r10=0000000000000000
+r11=0000000000000000 r12=0000000000000004 r13=0000000141100dc0
+r14=0000000000000001 r15=0000000000000000
+iopl=0         nv up ei pl nz na pe nc
+cs=0033  ss=002b  ds=002b  es=002b  fs=0053  gs=002b             efl=00000202
+KERNELBASE!RaiseException+0x8a:
+00007ffb`fb64569a 0f1f440000      nop     dword ptr [rax+rax]
+*** WARNING: Unable to verify checksum for fs2_open_26_2_0_x64_SSE2-FASTDBG.exe
+Child-SP          RetAddr               Call Site
+00000000`0015e060 00000001`403ea877     KERNELBASE!RaiseException+0x8a
+00000000`0015e160 00000001`408cfe8e     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x3ea877
+00000000`0015e1c0 00000001`407a5783     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x8cfe8e
+00000000`0015e920 00000001`40caaa54     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x7a5783
+00000000`0015e9a0 00000001`40cab615     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbbf84
+00000000`0015e9e0 00000001`40cac03d     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcb45
+00000000`0015ea10 00000001`40cadc4a     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbd56d
+00000000`0015ea40 00000001`40cac435     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbf17a
+00000000`0015ea90 00000001`40cab626     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbd965
+00000000`0015ebc0 00000001`40cab4d1     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcb56
+00000000`0015ebf0 00000001`40cab6ae     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbca01
+00000000`0015ed40 00000001`40cb8643     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcbde
+00000000`0015ed80 00000001`40caaa54     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xc9b73
+00000000`0015edd0 00000001`40cad0d2     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbbf84
+00000000`0015ee10 00000001`40cab626     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbe602
+00000000`0015ef40 00000001`40cab4d1     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcb56
+00000000`0015ef70 00000001`40cab6ae     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbca01
+00000000`0015f0c0 00000001`40cb8643     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcbde
+00000000`0015f100 00000001`40caaa54     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xc9b73
+00000000`0015f150 00000001`40cad0d2     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbbf84
+00000000`0015f190 00000001`40cab626     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbe602
+00000000`0015f2c0 00000001`40cab4d1     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcb56
+00000000`0015f2f0 00000001`40cab6ae     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbca01
+00000000`0015f440 00000001`409a2f1b     fs2_open_26_2_0_x64_SSE2_FASTDBG!luaopen_bit+0xbcbde
+00000000`0015f480 00000001`4056009d     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x9a2f1b
+00000000`0015f560 00000001`405644bb     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x56009d
+00000000`0015f5e0 00000001`4010eeba     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x5644bb
+00000000`0015f670 00000001`4049bb7a     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x10eeba
+00000000`0015f700 00000001`4043ee1c     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x49bb7a
+00000000`0015f780 00000001`4043e430     fs2_open_26_2_0_x64_SSE2_FASTDBG+0x43ee1c
+quit:
+NatVis script unloaded from 'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\Visualizers\atlmfc.natvis'

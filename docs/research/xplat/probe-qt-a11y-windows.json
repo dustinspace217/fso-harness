@@ -1,0 +1,26 @@
+{
+ "os": "windows",
+ "qt_version": "6.12.0",
+ "object_name_exposed": true,
+ "object_name_property": "AutomationId",
+ "object_name_value": "QApplication.standinDialog.shipNameEdit",
+ "set_text_ok": true,
+ "combo_select_ok": false,
+ "select_method": null,
+ "tree_walk_ok": true,
+ "press_ok": true,
+ "values_after_ok": {
+  "ship_name": "GTD Probe",
+  "ship_class": "GTF Ulysses"
+ },
+ "qt_saw_name": true,
+ "qt_saw_class": false,
+ "needs_permission": null,
+ "notes": [
+  "14 accessible elements under the stand-in",
+  "ids found: shipNameEdit=yes, shipClassCombo=yes, eventTree=yes, okButton=yes",
+  "select (expand + SelectionItem.Select) returned True; combo shows 'GTF Ulysses'",
+  "select (expand + Invoke on the item) returned True; combo shows 'GTF Ulysses'"
+ ],
+ "display": null
+}

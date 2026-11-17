@@ -1,0 +1,257 @@
+# Cross-platform probes (Plan A, Tasks 5-9): measurements whose results shape Plan B. Run by
+# hand (Actions > probes > Run workflow); each job uploads its JSON as an artifact, which is
+# copied into docs/research/xplat/. A probe never fails its job on what it finds; a failed job
+# means the probe itself broke (download, checksum, setup).
+name: probes
+on:
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: Which probe to run
+        type: choice
+        options: [hidden-desktop, qt-a11y, qt-combo, fred2-uia, fso-start, openal-wave]
+        default: hidden-desktop
+
+permissions:
+  contents: read
+
+jobs:
+  # Probe 1 (Task 5): rendering, capture, UI Automation and input on a hidden Windows desktop.
+  hidden-desktop:
+    if: inputs.probe == 'hidden-desktop'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      # Pinned downloads, checked by sha256 before use (digests from the GitHub release API).
+      FSO_URL: https://github.com/scp-fs2open/fs2open.github.com/releases/download/release_26_0_1/fs2_open_26_0_1-builds-x64-SSE2.zip
+      FSO_SHA256: 3bc442fcbede5a3fc44980e49e2de08a91218abb767246e0108b23ee02d7d310
+      MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z
+      MESA_SHA256: 351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r probes/xplat/requirements-probes.txt
+      - name: FSO 26.0.1 and Mesa 26.2.4, checksum-verified
+        shell: pwsh
+        run: |
+          function Get-Pinned($Url, $Sha, $File) {
+            Invoke-WebRequest -Uri $Url -OutFile $File
+            $got = (Get-FileHash -Algorithm SHA256 $File).Hash.ToLower()
+            if ($got -ne $Sha) { throw "$File has sha256 $got, expected $Sha" }
+          }
+          Get-Pinned $env:FSO_URL $env:FSO_SHA256 fso.zip
+          Get-Pinned $env:MESA_URL $env:MESA_SHA256 mesa.7z
+          Expand-Archive fso.zip -DestinationPath fso
+          7z x mesa.7z -omesa x64/opengl32.dll x64/libgallium_wgl.dll -y
+          if ($LASTEXITCODE -ne 0) { throw "7z exited $LASTEXITCODE" }
+      - run: python probes/xplat/win_hidden_desktop.py --out probe-out --fso-dir fso --mesa-dir mesa/x64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: probe-hidden-desktop
+          path: probe-out/
+
+  # Probe 2 (Task 6): driving a Qt 6 dialog through UI Automation (Windows) and the
+  # Accessibility API (macOS). The Linux run is local: probes/xplat/linux_a11y_session.sh.
+  qt-a11y:
+    if: inputs.probe == 'qt-a11y'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r probes/xplat/requirements-probes.txt
+      - run: python probes/xplat/a11y_probe.py --out probe-out
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: probe-qt-a11y-${{ runner.os }}
+          path: probe-out/
+
+  # Probe 8 (2026-11-16): ways to pick a Qt combo-box item when the accessibility "select" does
+  # not take. macOS can only be measured here (no macOS VM); the Windows run is a second
+  # machine beside the local VM's. The Linux run is local: probes/xplat/linux_a11y_session.sh.
+  qt-combo:
+    if: inputs.probe == 'qt-combo'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r probes/xplat/requirements-probes.txt
+      - run: python probes/xplat/qt_combo_routes.py --out probe-out --label ci
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: probe-qt-combo-${{ runner.os }}
+          path: probe-out/
+
+  # Probe 3 (Task 7): FRED2's first window through UI Automation, AutomationIds checked against
+  # fred2/resource.h at the same release tag. No game data.
+  fred2-uia:
+    if: inputs.probe == 'fred2-uia'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      FSO_URL: https://github.com/scp-fs2open/fs2open.github.com/releases/download/release_26_0_1/fs2_open_26_0_1-builds-x64-SSE2.zip
+      FSO_SHA256: 3bc442fcbede5a3fc44980e49e2de08a91218abb767246e0108b23ee02d7d310
+      RES_URL: https://raw.githubusercontent.com/scp-fs2open/fs2open.github.com/release_26_0_1/fred2/resource.h
+      RES_SHA256: 8fdf2fa0c37ef9df9d0926b655626a069dd4387b1b9a79b140baa417134aa80b
+      # The runner's own OpenGL is 1.1 and FRED2 needs 3.2 (second run); Mesa's software OpenGL
+      # goes next to the exe, as for the engine in probe 1.
+      MESA_URL: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z
+      MESA_SHA256: 351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r probes/xplat/requirements-probes.txt
+      - name: FRED2 26.0.1 and its resource.h, checksum-verified
+        shell: pwsh
+        run: |
+          function Get-Pinned($Url, $Sha, $File) {
+            Invoke-WebRequest -Uri $Url -OutFile $File
+            $got = (Get-FileHash -Algorithm SHA256 $File).Hash.ToLower()
+            if ($got -ne $Sha) { throw "$File has sha256 $got, expected $Sha" }
+          }
+          Get-Pinned $env:FSO_URL $env:FSO_SHA256 fso.zip
+          Get-Pinned $env:RES_URL $env:RES_SHA256 resource.h
+          Get-Pinned $env:MESA_URL $env:MESA_SHA256 mesa.7z
+          Expand-Archive fso.zip -DestinationPath fso
+          7z e mesa.7z -ofso x64/opengl32.dll x64/libgallium_wgl.dll -y
+          if ($LASTEXITCODE -ne 0) { throw "7z exited $LASTEXITCODE" }
+      - run: python probes/xplat/fred2_uia.py --out probe-out --fred2 fso/fred2_open_26_0_1_x64_SSE2.exe --resource-h resource.h
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: probe-fred2-uia
+          path: probe-out/probe-fred2-uia.json
+
+  # Probe 5 (Task 8): does the 26.0.1 FastDebug engine start on each OS with no data?
+  fso-start:
+    if: inputs.probe == 'fso-start'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: fs2_open_26_0_1-builds-Linux-x86_64.tar.gz
+            sha256: 50bd4ca5eb8c10751b8285e553d57d5e5dd356392abfc01a92ec9d26b87a55cb
+            engine: fs2_open_26_0_1_x64_SSE2-FASTDBG.AppImage
+          - os: windows-latest
+            asset: fs2_open_26_0_1-builds-x64-SSE2.zip
+            sha256: 3bc442fcbede5a3fc44980e49e2de08a91218abb767246e0108b23ee02d7d310
+            engine: fs2_open_26_0_1_x64_SSE2-FASTDBG.exe
+          - os: macos-latest
+            asset: fs2_open_26_0_1-builds-Mac-arm64.tar.gz
+            sha256: 4a5128f6b47736596595c04273fad4b6ab4851f5b96cebe7331e37684e5c5bfe
+            engine: fs2_open_26_0_1_arm64-FASTDBG.app/Contents/MacOS/fs2_open_26_0_1_arm64-FASTDBG
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      ASSET: ${{ matrix.asset }}
+      SHA256: ${{ matrix.sha256 }}
+      ENGINE: ${{ matrix.engine }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      # fso_start.py imports only psutil (QA SA-3); its pin comes from the one requirements file.
+      - shell: bash
+        run: pip install "$(grep "^psutil==" probes/xplat/requirements-probes.txt)"
+      - name: FSO 26.0.1 for this OS, checksum-verified
+        shell: bash
+        run: |
+          curl -sSfL -o "$ASSET" "https://github.com/scp-fs2open/fs2open.github.com/releases/download/release_26_0_1/$ASSET"
+          python -c "import hashlib, os, sys; h = hashlib.sha256(open(os.environ['ASSET'], 'rb').read()).hexdigest(); sys.exit(0 if h == os.environ['SHA256'] else 'sha256 ' + h + ' is not the pinned one')"
+          case "$ASSET" in *.zip) python -m zipfile -e "$ASSET" fso ;; *) python -m tarfile -e "$ASSET" fso ;; esac
+          chmod +x "fso/$ENGINE"
+      # libopenal1: the 26.0.1 AppImage does not bundle libopenal.so.1 (the first run exited 127
+      # with "error while loading shared libraries: libopenal.so.1"); a desktop usually has it.
+      - name: Linux display (Xvfb with Mesa) and the system OpenAL the AppImage expects
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y xvfb libgl1-mesa-dri libopenal1
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a -s "-screen 0 1280x720x24" python probes/xplat/fso_start.py --out probe-out --engine "fso/$ENGINE"
+      - if: runner.os != 'Linux'
+        shell: bash
+        run: python probes/xplat/fso_start.py --out probe-out --engine "fso/$ENGINE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: probe-fso-start-${{ runner.os }}
+          path: |
+            probe-out/probe-fso-start-*.json
+            probe-out/engine-stdout.txt
+
+  # Probe 6 (Task 9): per-session audio through OpenAL Soft's wave writer, with the OpenAL each
+  # release bundles. The Linux run is local, with the engine build's own libopenal.
+  openal-wave:
+    if: inputs.probe == 'openal-wave'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: fs2_open_26_0_1-builds-x64-SSE2.zip
+            sha256: 3bc442fcbede5a3fc44980e49e2de08a91218abb767246e0108b23ee02d7d310
+            library: OpenAL32.dll
+          - os: macos-latest
+            asset: fs2_open_26_0_1-builds-Mac-arm64.tar.gz
+            sha256: 4a5128f6b47736596595c04273fad4b6ab4851f5b96cebe7331e37684e5c5bfe
+            library: fs2_open_26_0_1_arm64.app/Contents/Frameworks/OpenAL.framework/OpenAL
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      ASSET: ${{ matrix.asset }}
+      SHA256: ${{ matrix.sha256 }}
+      LIBRARY: ${{ matrix.library }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+      - name: FSO 26.0.1 for this OS, checksum-verified
+        shell: bash
+        run: |
+          curl -sSfL -o "$ASSET" "https://github.com/scp-fs2open/fs2open.github.com/releases/download/release_26_0_1/$ASSET"
+          python -c "import hashlib, os, sys; h = hashlib.sha256(open(os.environ['ASSET'], 'rb').read()).hexdigest(); sys.exit(0 if h == os.environ['SHA256'] else 'sha256 ' + h + ' is not the pinned one')"
+          case "$ASSET" in *.zip) python -m zipfile -e "$ASSET" fso ;; *) python -m tarfile -e "$ASSET" fso ;; esac
+      - shell: bash
+        run: python probes/xplat/openal_wave.py --out probe-out --openal "fso/$LIBRARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        if: always()
+        with:
+          name: probe-openal-wave-${{ runner.os }}
+          path: |
+            probe-out/probe-openal-wave-*.json
+            probe-out/audio.wav

@@ -1,0 +1,26 @@
+{
+ "os": "linux",
+ "qt_version": "6.12.0",
+ "object_name_exposed": true,
+ "object_name_property": "accessible-id",
+ "object_name_value": "QApplication.standinDialog.shipNameEdit",
+ "set_text_ok": true,
+ "combo_select_ok": false,
+ "select_method": null,
+ "tree_walk_ok": true,
+ "press_ok": true,
+ "values_after_ok": {
+  "ship_name": "GTD Probe",
+  "ship_class": "GTF Ulysses"
+ },
+ "qt_saw_name": true,
+ "qt_saw_class": false,
+ "needs_permission": null,
+ "notes": [
+  "15 accessible elements under the stand-in",
+  "ids found: shipNameEdit=yes, shipClassCombo=yes, eventTree=yes, okButton=yes",
+  "select (list Selection.selectChild) returned True; combo shows 'GTF Ulysses'",
+  "select (item Toggle action) returned True; combo shows 'GTF Ulysses'"
+ ],
+ "display": ":99"
+}

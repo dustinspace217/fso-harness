@@ -1,0 +1,19 @@
+{
+ "os": "windows",
+ "python": "3.12.10",
+ "exit": 4,
+ "summary": "",
+ "output_tail": [
+  "ImportError while loading conftest 'D:\\a\\fso-harness-ci\\fso-harness-ci\\tests\\conftest.py'.",
+  "tests\\conftest.py:18: in <module>",
+  "    from fsoctl import launcher, scope, sound",
+  "fsoctl\\launcher.py:20: in <module>",
+  "    from . import bridge_install, channel, match, paths, renderer, scope, session, sound, xwin",
+  "fsoctl\\bridge_install.py:27: in <module>",
+  "    from . import paths, scope, session",
+  "fsoctl\\session.py:8: in <module>",
+  "    import fcntl",
+  "E   ModuleNotFoundError: No module named 'fcntl'"
+ ],
+ "files": {}
+}

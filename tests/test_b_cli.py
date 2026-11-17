@@ -48,6 +48,7 @@ def test_unexpected_exceptions_become_structured_errors(monkeypatch, capsys, exc
     assert out["code"] == code and type(exc).__name__ in out["message"]
 
 
+@pytest.mark.linux
 def test_sigterm_unwinds_so_cleanup_runs(monkeypatch):
     # The MCP server ends a timed-out fsoctl with SIGTERM; the verb's `finally: stop` must run.
     # A sentinel handler stands in first, so a missing cli handler fails the test instead of
@@ -89,6 +90,7 @@ def test_a_verb_reporting_failure_sets_the_exit_code(monkeypatch, capsys, result
     assert out == {"ok": True, **result} if result.get("ok", True) else out == result
 
 
+@pytest.mark.linux
 def test_a_second_sigterm_cannot_interrupt_the_cleanup(monkeypatch):
     # R3: cleanup after the first SIGTERM (stopping a session) must not itself be cut short.
     previous = signal.signal(signal.SIGTERM, lambda s, f: None)

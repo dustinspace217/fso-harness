@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from fsoctl.envsetup import child_env, for_kind
 
 _BASE = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0", "HOME": "/home/x", "PATH": "/usr/bin",
@@ -11,6 +13,7 @@ _BASE = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0", "HOME": "/home/x", "PA
          "XDG_SESSION_DESKTOP": "KDE"}
 
 
+@pytest.mark.linux
 def test_child_env_pins_toolkits_to_the_virtual_display():
     base = dict(_BASE)
     env = child_env(base, ":93", Path("/r/s1/prefs"), "opengl", Path("/r/s1"))
@@ -24,6 +27,7 @@ def test_child_env_pins_toolkits_to_the_virtual_display():
     assert base == _BASE  # caller's dict untouched
 
 
+@pytest.mark.linux
 def test_child_env_keeps_the_child_out_of_the_users_home_and_session():
     # QA SA-2: FSO's legacy config mode and qtFRED's autosave/QSettings write under $HOME and the
     # XDG folders. QA SA-3/CR-2: SDL inhibits the screensaver over the session D-Bus, and Qt
@@ -40,6 +44,7 @@ def test_child_env_keeps_the_child_out_of_the_users_home_and_session():
     assert env["SDL_VIDEO_ALLOW_SCREENSAVER"] == "1"
 
 
+@pytest.mark.linux
 def test_child_env_cuts_every_route_to_the_session_bus():
     # Fix-wave-2 R2 (SA2-1 / CR2-2, probe-confirmed): with DBUS_SESSION_BUS_ADDRESS merely
     # unset, libdbus falls back to $XDG_RUNTIME_DIR/bus and the engine and qtFRED joined the

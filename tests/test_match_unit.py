@@ -28,19 +28,19 @@ def _stub_scope(monkeypatch, pid, active=True):
 
 
 def test_pid_start_reads_field_22_of_proc_stat():
-    me = match.pid_start(os.getpid())
+    me = match.procs.pid_start(os.getpid())
     assert isinstance(me, int) and me > 0
-    assert match.pid_start(2**22 + 12345) is None     # no such pid
+    assert match.procs.pid_start(2**22 + 12345) is None     # no such pid
 
 
 def test_create_records_holder_and_is_alive(tmp_runtime, monkeypatch):
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
         _stub_scope(monkeypatch, sleeper.pid)
-        m = match.create(label="t")
+        m = match.create(label="t", network="private")
         assert m.id.startswith("m") and len(m.id) == 9
         assert m.holder_pid == sleeper.pid
-        assert m.holder_start == match.pid_start(sleeper.pid)
+        assert m.holder_start == match.procs.pid_start(sleeper.pid)
         assert m.status == "alive" and m.label == "t"
         assert match.load(m.id).holder_pid == sleeper.pid
         assert [x.id for x in match.list_matches()] == [m.id]
@@ -55,7 +55,7 @@ def test_create_records_holder_and_is_alive(tmp_runtime, monkeypatch):
 def test_dead_holder_detected_by_pid_start(tmp_runtime, monkeypatch):
     sleeper = subprocess.Popen(["sleep", "30"])
     _stub_scope(monkeypatch, sleeper.pid)
-    m = match.create()
+    m = match.create(network="private")
     sleeper.kill()
     sleeper.wait()
     assert not match.alive(m)            # pid gone
@@ -70,7 +70,7 @@ def test_inactive_scope_means_dead_even_with_live_pid(tmp_runtime, monkeypatch):
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
         _stub_scope(monkeypatch, sleeper.pid, active=True)
-        m = match.create()
+        m = match.create(network="private")
         monkeypatch.setattr(scope, "is_active", lambda unit: False)
         assert not match.alive(m)
     finally:
@@ -89,7 +89,7 @@ def test_load_unknown_and_bad_ids(tmp_runtime):
 def test_refuses_root(tmp_runtime, monkeypatch):
     monkeypatch.setattr(os, "getuid", lambda: 0)
     with pytest.raises(HarnessError) as e:
-        match.create()
+        match.create(network="private")
     assert e.value.code == EXIT_REFUSED
 
 
@@ -97,7 +97,7 @@ def test_audit_writes_persistent_line(tmp_runtime, monkeypatch):
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
         _stub_scope(monkeypatch, sleeper.pid)
-        m = match.create()
+        m = match.create(network="private")
         text = (paths.state_dir() / "audit.log").read_text()
         assert m.id in text and '"kind": "match_create"' in text
     finally:
@@ -111,7 +111,7 @@ def test_cli_match_create_list_remove(tmp_runtime, monkeypatch, capsys):
         _stub_scope(monkeypatch, sleeper.pid)
         stopped = []
         monkeypatch.setattr(scope, "stop", stopped.append)
-        rc = cli.main(["--json", "match", "create", "--label", "repro"])
+        rc = cli.main(["--json", "match", "create", "--label", "repro", "--network", "private"])
         out = capsys.readouterr().out
         assert rc == 0 and '"holder_pid": %d' % sleeper.pid in out
         mid = json.loads(out)["id"]
@@ -145,7 +145,7 @@ def test_pid_start_parses_a_comm_with_a_parenthesis_and_is_recent(tmp_path):
     exe.chmod(0o755)
     proc = subprocess.Popen([str(exe), "30"])
     try:
-        got = match.pid_start(proc.pid)
+        got = match.procs.pid_start(proc.pid)
         uptime = Path("/proc/uptime").read_text().split()[0]
         uptime_ticks = float(uptime) * os.sysconf("SC_CLK_TCK")
         assert got is not None and abs(uptime_ticks - got) < 5 * os.sysconf("SC_CLK_TCK")
@@ -158,7 +158,7 @@ def test_alive_needs_a_recorded_holder_and_a_live_record(tmp_runtime, monkeypatc
     asked = []
     monkeypatch.setattr(scope, "is_active", lambda unit: asked.append(unit) or True)
     me = match.Match(id="m0a1b2c3d", scope="fso-harness-match-m0a1b2c3d",
-                     holder_pid=os.getpid(), holder_start=match.pid_start(os.getpid()),
+                     holder_pid=os.getpid(), holder_start=match.procs.pid_start(os.getpid()),
                      status="alive")
     assert match.alive(me) and asked == ["fso-harness-match-m0a1b2c3d"]
     assert not match.alive(match.Match(id="m0a1b2c3d", scope="s", holder_pid=None,
@@ -179,7 +179,7 @@ def test_create_starts_the_holder_argv_in_its_own_scope(tmp_runtime, monkeypatch
     try:
         _stub_scope(monkeypatch, sleeper.pid)
         monkeypatch.setattr(scope, "start", fake_start)
-        m = match.create()
+        m = match.create(network="private")
         assert seen["unit"] == m.scope == f"fso-harness-match-{m.id}"
         assert seen["argv"] == match.HOLDER_ARGV and "--map-root-user" in seen["argv"]
         assert seen["log"] == paths.match_dir(m.id) / "holder.log"
@@ -208,7 +208,7 @@ def _live_holder(monkeypatch):
     """A real sleep as the holder; returns (match, sleeper). Caller kills the sleeper."""
     sleeper = subprocess.Popen(["sleep", "30"])
     _stub_scope(monkeypatch, sleeper.pid)
-    return match.create(), sleeper
+    return match.create(network="private"), sleeper
 
 
 def test_create_takes_the_launch_lock(tmp_runtime, monkeypatch):
@@ -241,7 +241,7 @@ def test_create_failure_paths_end_the_holder_and_say_why(tmp_runtime, monkeypatc
         return _FakeProc(gone.pid)
     monkeypatch.setattr(scope, "start", start_and_log)
     with pytest.raises(HarnessError) as e:
-        match.create()
+        match.create(network="private")
     assert e.value.code == EXIT_LAUNCH and "Operation not permitted" in e.value.message
     assert len(stopped) == 1 and match.list_matches()[0].status == "removed"
 
@@ -249,7 +249,7 @@ def test_create_failure_paths_end_the_holder_and_say_why(tmp_runtime, monkeypatc
         raise HarnessError(EXIT_LAUNCH, "scope never became active", "")
     monkeypatch.setattr(scope, "start", start_raises)
     with pytest.raises(HarnessError):
-        match.create()
+        match.create(network="private")
     assert len(stopped) == 2
     assert all(m.status == "removed" for m in match.list_matches())
     text = (paths.state_dir() / "audit.log").read_text()
@@ -318,9 +318,9 @@ def test_match_cap(tmp_runtime, monkeypatch):
     sleeper = subprocess.Popen(["sleep", "30"])
     try:
         _stub_scope(monkeypatch, sleeper.pid)
-        match.create()
+        match.create(network="private")
         with pytest.raises(HarnessError) as e:
-            match.create()
+            match.create(network="private")
         assert e.value.code == EXIT_REFUSED and "match" in e.value.message
     finally:
         sleeper.kill()

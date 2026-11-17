@@ -14,6 +14,7 @@ from .errors import EXIT_ENGINE, EXIT_LAUNCH, HarnessError
 
 _MEM_FLOOR_KB = 2 * 1024 * 1024
 _MEM_SHARE = 0.60
+_MEM_RESERVE_KB = 8 * 1024 * 1024   # left for the desktop whatever the share says
 _START_TIMEOUT = 10.0
 _KILL_WAIT = 10.0     # seconds to wait for a SIGKILLed scope to end
 POLITE_STOP_SEC = 20  # stop()'s wait for `systemctl stop` before it escalates to SIGKILL
@@ -21,20 +22,63 @@ POLITE_STOP_SEC = 20  # stop()'s wait for `systemctl stop` before it escalates t
 _GONE_STATES = ("inactive", "failed", "unknown")
 
 
+def _meminfo_kb(*fields: str) -> dict[str, int]:
+    """Return the named /proc/meminfo fields in KiB; raise if any is missing."""
+    found: dict[str, int] = {}
+    with open("/proc/meminfo", encoding="utf-8") as f:
+        for line in f:
+            key = line.split(":")[0]
+            if key in fields:
+                found[key] = int(line.split()[1])
+    missing = [k for k in fields if k not in found]
+    if missing:
+        raise HarnessError(EXIT_LAUNCH, f"cannot read {', '.join(missing)} from /proc/meminfo",
+                           "is /proc mounted?")
+    return found
+
+
 def _mem_available_kb() -> int:
     """Return MemAvailable from /proc/meminfo in KiB."""
-    with open("/proc/meminfo") as f:
-        for line in f:
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1])
-    raise HarnessError(EXIT_LAUNCH, "cannot read MemAvailable", "is /proc mounted?")
+    return _meminfo_kb("MemAvailable")["MemAvailable"]
+
+
+def mem_cap_kb() -> int:
+    """Return the memory ceiling a new scope gets: the share of MemAvailable, never into the
+    reserve."""
+    avail = _mem_available_kb()
+    return max(_MEM_FLOOR_KB, min(int(avail * _MEM_SHARE), avail - _MEM_RESERVE_KB))
+
+
+def room_for_engine() -> str | None:
+    """Return why a new engine must not start now, or None when the box has room.
+
+    The check the per-scope ceiling cannot make: the ceiling is a share of MemAvailable at launch,
+    which says nothing about the desktop needing memory of its own.
+
+    WHY available RAM only, and no test of swap: a free-swap test stood here until 2026-11-11 and
+    was removed at Dustin's direction. Swap on the workstation is often nearly full while plenty of
+    RAM is available, so that test refused launches the machine could carry. MemAvailable is the
+    kernel's own estimate of what a new process can take without swapping.
+
+    What this does NOT cover: on 2026-10-16 an 11 GB engine inside a correct ceiling pushed a
+    full-swap box into a global OOM that killed Firefox. A ceiling of 11 GB or more means at
+    least about 18 GB was available at launch, so this test would have let that launch through;
+    only the removed swap test would have refused it. The check is also per launch, not
+    aggregate: engines started close together are each sized from the same MemAvailable
+    (DEF-QA-02).
+    """
+    avail = _mem_available_kb()
+    if avail - _MEM_RESERVE_KB < _MEM_FLOOR_KB:
+        return (f"only {avail // 1048576} GB available with {_MEM_RESERVE_KB // 1048576} GB "
+                "reserved for the desktop")
+    return None
 
 
 def caps(runtime_sec: int = 1800, cpu_cores: int = 8, tasks: int = 512,
          mem_kb: int | None = None) -> list[str]:
     """Return systemd scope properties capping memory, swap, CPU, task count and runtime."""
     if mem_kb is None:
-        mem_kb = max(_MEM_FLOOR_KB, int(_mem_available_kb() * _MEM_SHARE))
+        mem_kb = mem_cap_kb()
     return [f"MemoryMax={mem_kb}K", "MemorySwapMax=0", f"CPUQuota={cpu_cores * 100}%",
             f"TasksMax={tasks}", f"RuntimeMaxSec={runtime_sec}"]
 

@@ -59,7 +59,7 @@ def _guide(args: argparse.Namespace) -> dict:
     if not GUIDE.is_file():
         raise HarnessError(EXIT_NOT_FOUND, f"agent guide not found at {GUIDE}",
                            "the guide ships in the repository; run the harness from a checkout")
-    text = GUIDE.read_text()
+    text = GUIDE.read_text(encoding="utf-8")
     names = sections(text)
     if not args.section:
         return {"sections": names}

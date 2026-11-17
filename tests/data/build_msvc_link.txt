@@ -1,0 +1,6 @@
+MSBuild version 17.14.60+43b635718 for .NET Framework
+
+  Building Custom Rule C:/xplat/msvc/CMakeLists.txt
+  bad_link.cpp
+bad_link.obj : error LNK2019: unresolved external symbol "int __cdecl defined_nowhere(int)" (?defined_nowhere@@YAHH@Z) referenced in function main [C:\xplat\msvc\build\bad_link.vcxproj]
+C:\xplat\msvc\build\Release\bad_link.exe : fatal error LNK1120: 1 unresolved externals [C:\xplat\msvc\build\bad_link.vcxproj]

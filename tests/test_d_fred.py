@@ -145,7 +145,7 @@ def test_selection_says_it_is_ocr_of_a_fixed_crop(monkeypatch):
 
 # ---- fix wave 2, TA2-1: the dialog is read again until its count line and entries agree --------
 
-CHECKER_OCR = (Path(__file__).parent / "data" / "checker_ocr.txt").read_text()
+CHECKER_OCR = (Path(__file__).parent / "data" / "checker_ocr.txt").read_text(encoding="utf-8")
 
 
 @pytest.fixture

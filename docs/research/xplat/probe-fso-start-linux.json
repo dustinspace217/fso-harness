@@ -1,0 +1,36 @@
+{
+ "os": "linux",
+ "argv": [
+  "fs2_open_26_0_1_x64_SSE2-FASTDBG.AppImage",
+  "-window",
+  "-nosound",
+  "-nomusic"
+ ],
+ "exit_code": 127,
+ "seconds": 6.1,
+ "reached_gl_init": true,
+ "udp_ports": [],
+ "log_tail": [
+  "  Max uniform buffer bindings: 120",
+  "  Uniform buffer byte offset alignment: 16",
+  "... OpenGL init is complete!",
+  "Initializing path renderer...",
+  "Checking graphics capabilities:",
+  "  Persistent buffer mapping: Enabled",
+  "Checking mod required rendering features...",
+  "  All required features are supported.",
+  "Failed to load cursor bitmap cursorweb!",
+  "",
+  "Error:",
+  "Web cursor bitmap not found.  This is most likely due to one of three reasons:",
+  "    1) You're running FreeSpace Open from somewhere other than your FreeSpace 2 folder;",
+  "    2) You've somehow corrupted your FreeSpace 2 installation, e.g. by modifying or removing the retail VP files;",
+  "    3) You haven't installed FreeSpace 2 at all.  (Note that installing FreeSpace Open does NOT remove the need for a FreeSpace 2 installation.)",
+  "Number 1 can be fixed by simply moving the FreeSpace Open executable file to the FreeSpace 2 folder.  Numbers 2 and 3 can be fixed by installing or reinstalling FreeSpace 2.",
+  "",
+  "File: 2d.cpp",
+  "Line: 2042",
+  ""
+ ],
+ "notes": []
+}

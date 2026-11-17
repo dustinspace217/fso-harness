@@ -68,6 +68,7 @@ def _clock(mission_time, overall, frames):
             "gameplay_frames": frames}
 
 
+@pytest.mark.symlinks
 def test_stats_cover_only_the_window(run):
     run["clocks"] = [_clock(0.2, 30.2, 20), _clock(1.7, 31.7, 50)]
     r = frame_stats.frame_stats([], "m.fs2", seconds=1.5, binary="/bin/true")
@@ -79,6 +80,7 @@ def test_stats_cover_only_the_window(run):
     assert run["calls"] == ["clock", "clock"]
 
 
+@pytest.mark.symlinks
 def test_window_is_cut_by_frame_count_not_mission_time(run):
     # One engine probe (2026-10-12) read mission time 1.8 s just after gameplay began, while the
     # profiler's rows start at gameplay, so a cut by mission time lands late. The bridge's
@@ -88,6 +90,7 @@ def test_window_is_cut_by_frame_count_not_mission_time(run):
     assert r["frames"] == 30 and r["p50_ms"] == 50.0
 
 
+@pytest.mark.symlinks
 def test_unclean_exit_is_reported(run):
     run["clocks"] = [_clock(0.2, 30.2, 20), _clock(1.7, 31.7, 50)]
     run["exit"] = {"returncode": -11, "signal": "SIGSEGV", "at": 1}
@@ -95,6 +98,7 @@ def test_unclean_exit_is_reported(run):
     assert r["clean_exit"] is False and r["exit_info"]["signal"] == "SIGSEGV"
 
 
+@pytest.mark.symlinks
 def test_no_frame_count_fails_loudly(run):
     run["clocks"] = [{"mission_time": 0.2}, {"mission_time": 1.7}]
     with pytest.raises(HarnessError) as e:
@@ -102,6 +106,7 @@ def test_no_frame_count_fails_loudly(run):
     assert e.value.code == EXIT_ENGINE and "gameplay_frames" in e.value.message and e.value.hint
 
 
+@pytest.mark.symlinks
 def test_no_mission_time_fails_loudly(run):
     run["clocks"] = [_clock(None, 30.2, 20), _clock(None, 31.7, 50)]
     with pytest.raises(HarnessError) as e:
@@ -109,6 +114,7 @@ def test_no_mission_time_fails_loudly(run):
     assert e.value.code == EXIT_ENGINE and "mission_time" in e.value.message and e.value.hint
 
 
+@pytest.mark.symlinks
 def test_window_past_the_recorded_frames_fails_loudly(run):
     # The profile holds 80 frames; a window claimed to end at frame 120 cannot be cut from it.
     run["clocks"] = [_clock(7.5, 37.5, 90), _clock(9.0, 39.0, 120)]

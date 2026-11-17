@@ -60,6 +60,8 @@ def tree(tmp_path, tmp_runtime, monkeypatch):
     (wt / "build" / "CMakeCache.txt").write_text("")
     monkeypatch.setattr(scope, "caps", lambda **kw: [])
     monkeypatch.setattr(scope, "is_active", lambda unit: False)
+    # build() asks where cmake is; the answer must not depend on the test machine
+    monkeypatch.setattr(build.programs, "find", lambda name: f"/usr/bin/{name}")
     stopped: list[str] = []
     monkeypatch.setattr(scope, "stop", lambda unit, *a, **k: stopped.append(unit))
     return wt, stopped

@@ -1,0 +1,109 @@
+{
+ "window_station": "WinSta0",
+ "python": "3.12.10",
+ "desktop_error": null,
+ "results": [
+  {
+   "opengl": "runner",
+   "desktop": "normal",
+   "desktop_created": true,
+   "gl_context": "1.1.0",
+   "gl_renderer": "GDI Generic",
+   "gl_meets_minimum": false,
+   "pixels_match": true,
+   "capture_matches": true,
+   "uia_sees_window": true,
+   "postmessage_key_reached": true,
+   "fso_reached_gl_init": false,
+   "notes": [
+    "glReadPixels centre [64, 128, 191]",
+    "PrintWindow centre (64, 128, 191)",
+    "engine log: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\probe1-i99406mo\\prefs\\data\\fs2_open.log",
+    "engine log tail: No XSTR entry in strings.tbl for index 1736",
+    "engine log tail: No XSTR entry in strings.tbl for index 1737",
+    "engine log tail: Failed to init speech",
+    "engine log tail: Initializing SDL video...",
+    "engine log tail: Initializing OpenGL graphics device at 1024x768 with 32-bit color...",
+    "engine log tail: Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+    "engine log tail: SDL: Creating window at 0,0 because window has same size as desktop.",
+    "engine log tail: Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+    "engine log tail: Actual SDL Video values    = R: 8, G: 8, B: 8, depth: 32, stencil: 8, double-buffer: 1, FSAA: 0",
+    "engine log tail: Error: Current GL Version of 1.1 is less than the required version of 3.2.",
+    "engine log tail: Switch video modes or update your drivers.",
+    "engine log tail: File: gropengl.cpp",
+    "engine log tail: Line: 1352"
+   ]
+  },
+  {
+   "opengl": "runner",
+   "desktop": "hidden",
+   "desktop_created": true,
+   "gl_context": "1.1.0",
+   "gl_renderer": "GDI Generic",
+   "gl_meets_minimum": false,
+   "pixels_match": true,
+   "capture_matches": true,
+   "uia_sees_window": true,
+   "postmessage_key_reached": true,
+   "fso_reached_gl_init": false,
+   "notes": [
+    "glReadPixels centre [64, 128, 191]",
+    "PrintWindow centre (64, 128, 191)",
+    "engine log: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\probe1-u98leezc\\prefs\\data\\fs2_open.log",
+    "engine log tail: No XSTR entry in strings.tbl for index 1736",
+    "engine log tail: No XSTR entry in strings.tbl for index 1737",
+    "engine log tail: Failed to init speech",
+    "engine log tail: Initializing SDL video...",
+    "engine log tail: Initializing OpenGL graphics device at 1024x768 with 32-bit color...",
+    "engine log tail: Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+    "engine log tail: SDL: Creating window at 0,0 because window has same size as desktop.",
+    "engine log tail: Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+    "engine log tail: Actual SDL Video values    = R: 8, G: 8, B: 8, depth: 32, stencil: 8, double-buffer: 1, FSAA: 0",
+    "engine log tail: Error: Current GL Version of 1.1 is less than the required version of 3.2.",
+    "engine log tail: Switch video modes or update your drivers.",
+    "engine log tail: File: gropengl.cpp",
+    "engine log tail: Line: 1352"
+   ]
+  },
+  {
+   "opengl": "mesa",
+   "desktop": "normal",
+   "desktop_created": true,
+   "gl_context": "4.6 (Core Profile) Mesa 26.2.4 (git-9a0169f2a7)",
+   "gl_renderer": "llvmpipe (LLVM 23.1.2, 256 bits)",
+   "gl_meets_minimum": true,
+   "pixels_match": true,
+   "capture_matches": true,
+   "uia_sees_window": true,
+   "postmessage_key_reached": true,
+   "fso_reached_gl_init": true,
+   "notes": [
+    "glReadPixels centre [64, 128, 191]",
+    "PrintWindow centre (64, 128, 191)",
+    "engine log: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\probe1-4xt7aruz\\prefs\\data\\fs2_open.log",
+    "engine: OpenGL Renderer  : llvmpipe (LLVM 23.1.2, 256 bits)",
+    "engine: OpenGL Version   : 4.6 (Core Profile) Mesa 26.2.4 (git-9a0169f2a7)"
+   ]
+  },
+  {
+   "opengl": "mesa",
+   "desktop": "hidden",
+   "desktop_created": true,
+   "gl_context": "4.6 (Core Profile) Mesa 26.2.4 (git-9a0169f2a7)",
+   "gl_renderer": "llvmpipe (LLVM 23.1.2, 256 bits)",
+   "gl_meets_minimum": true,
+   "pixels_match": true,
+   "capture_matches": true,
+   "uia_sees_window": true,
+   "postmessage_key_reached": true,
+   "fso_reached_gl_init": true,
+   "notes": [
+    "glReadPixels centre [64, 128, 191]",
+    "PrintWindow centre (64, 128, 191)",
+    "engine log: C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\probe1-68lempmm\\prefs\\data\\fs2_open.log",
+    "engine: OpenGL Renderer  : llvmpipe (LLVM 23.1.2, 256 bits)",
+    "engine: OpenGL Version   : 4.6 (Core Profile) Mesa 26.2.4 (git-9a0169f2a7)"
+   ]
+  }
+ ]
+}

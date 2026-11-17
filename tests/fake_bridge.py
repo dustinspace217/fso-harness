@@ -51,6 +51,7 @@ class FakeBridge:
         self.cmds: list[str] = []          # command names in the order the fake took them
         self.calls: list[tuple[str, dict]] = []   # (name, args) in the same order
         self._due: list[tuple[float, dict]] = []  # delayed replies: (monotonic due time, body)
+        self._names: dict[str, str | None] = {}   # command file name -> its command, read once
         self.thread = threading.Thread(target=self._loop, daemon=True)
 
     def __enter__(self):
@@ -112,6 +113,22 @@ class FakeBridge:
         except FileNotFoundError:
             return None
 
+    def _name_of(self, f: Path) -> str | None:
+        """A waiting command's name, read from its file ONCE and remembered by file name
+        (one entry per command of a test).
+
+        WHY once: an ignored command stays in the folder, and reading it on every turn of the
+        loop kept opening it. On Windows a rename and an open of the same file refuse each
+        other, so the caller's withdraw and one of those reads could meet. Windows VM,
+        2026-11-17: in one run of the whole unit tier the withdraw lost and the timeout was
+        journalled "taken_unknown" where the test expects "withdrawn"; in 5 of 140 runs of
+        that test alone the read lost and this thread ended with PermissionError in _peek.
+        Reading once: neither, in 140 runs. The real bridge never opens a command it has
+        not claimed."""
+        if f.name not in self._names:
+            self._names[f.name] = self._peek(f)
+        return self._names[f.name]
+
     def _write(self, body: dict) -> None:
         """Publish one reply file atomically (temp file + rename), as the bridge does."""
         tmp = self.dir / f"res-{body['seq']:06d}.json.tmp"
@@ -121,7 +138,7 @@ class FakeBridge:
     def _take_all(self) -> None:
         """Claim and answer (or schedule, or drop) every waiting command once."""
         for f in sorted(self.dir.glob("cmd-*.json")):
-            if self.ignore and self._peek(f) in self.ignore:
+            if self.ignore and self._name_of(f) in self.ignore:
                 continue
             cmd = self._claim(f)
             if cmd is None:

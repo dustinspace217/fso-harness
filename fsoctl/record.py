@@ -27,6 +27,7 @@ from .errors import (
     EXIT_USAGE,
     HarnessError,
 )
+from .platform import safefs
 
 JOURNAL = "journal.jsonl"
 MAX_ENTRIES = 100_000          # bounds load() and replay(); a longer journal is refused
@@ -48,11 +49,12 @@ _STATE_WAIT_SEC = 120.0
 
 def _current_state(sess: session.Session) -> str | None:
     """Return the game state from the bridge heartbeat file, or None (qtFRED, not started)."""
-    hb = paths.channel_dir(session.prefs_dir(sess)) / "ready.json"
     try:
-        return json.loads(hb.read_text()).get("state")
-    except (OSError, ValueError):
+        data, _ = safefs.read(session.prefs_dir(sess), f"{paths.CHANNEL_REL}/ready.json")
+        hb = json.loads(data)
+    except (OSError, ValueError, RecursionError):   # RecursionError: deep nesting (CR2-1)
         return None
+    return hb.get("state") if isinstance(hb, dict) else None
 
 
 def entry(sess: Any, kind: str, args: dict, seq: int | None = None) -> dict:
@@ -79,7 +81,7 @@ def outcome_of(err: HarnessError) -> str:
 
 def write(sess: Any, ent: dict, outcome: str) -> None:
     """Append an entry from entry() with its outcome (one of OUTCOMES' values, or "ok")."""
-    with open(session.run_dir(sess) / JOURNAL, "a") as f:
+    with open(session.run_dir(sess) / JOURNAL, "a", encoding="utf-8") as f:
         f.write(json.dumps({**ent, "outcome": outcome}) + "\n")
 
 
@@ -94,7 +96,7 @@ def load(sid: str) -> list[dict]:
     if not path.exists():
         return []
     out = []
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         for line in f:
             if len(out) >= MAX_ENTRIES:
                 raise HarnessError(EXIT_USAGE, f"journal longer than {MAX_ENTRIES} entries",
@@ -139,7 +141,9 @@ def launch_request_for(sess: session.Session, binary: str | None = None,
         skip_briefing=sw.get("skip_briefing", False),
         noninteractive=sw.get("noninteractive", True), allow_eval=sess.allow_eval,
         extra_args=list(sess.extra_args), kind=sess.kind, cwd=_replay_cwd(sess),
-        network=sess.network or "private")   # an old record replays with today's default
+        # A record with no network field predates it: its engine ran on the real network, which
+        # is also today's default (plan A QA CR-5/TA-10).
+        network=sess.network or "real")
 
 
 def _replay_cwd(sess: session.Session) -> str | None:

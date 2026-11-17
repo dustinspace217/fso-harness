@@ -35,7 +35,8 @@ def create(label: str | None = None) -> dict:
     for sub in _SUBDIRS:
         (root / "data" / sub).mkdir(parents=True)
         dirs[sub] = str(root / "data" / sub)
-    (root / STAMP).write_text(json.dumps({"label": label, "created": time.time()}))
+    (root / STAMP).write_text(json.dumps({"label": label, "created": time.time()}),
+                              encoding="utf-8")
     return {"name": name, "path": str(root), "dirs": dirs}
 
 
@@ -45,7 +46,7 @@ def list_all() -> dict:
     for d in sorted(paths.fs2path().glob(PREFIX + "*")):
         stamp = d / STAMP
         if _NAME.match(d.name) and stamp.is_file():
-            info = json.loads(stamp.read_text())
+            info = json.loads(stamp.read_text(encoding="utf-8"))
             mods.append({"name": d.name, "label": info.get("label"),
                          "created": info.get("created")})
     return {"mods": mods}

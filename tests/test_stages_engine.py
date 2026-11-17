@@ -40,6 +40,7 @@ def _clean(sid):
     return info
 
 
+@pytest.mark.linux
 def test_create_pilot_reaches_main_menu(engine_env, tmp_runtime):
     r = _run(engine_env, pilot_mode="create", pilot_name="HTest", skip_movies=True,
              dismiss_popups=True)
@@ -107,6 +108,7 @@ def test_skip_briefing_alone_leaves_the_command_briefing_up(engine_env, tmp_runt
         launcher.stop(r["id"])
 
 
+@pytest.mark.linux
 def test_popup_without_dismiss_is_visible_and_answerable(engine_env, tmp_runtime):
     # A fresh preferences folder shows a "new settings file" popup in pilot select (probe results
     # section 3). Without dismiss_popups it must stay up, show in the heartbeat, and close on

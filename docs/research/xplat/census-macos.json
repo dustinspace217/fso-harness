@@ -1,0 +1,481 @@
+{
+ "os": "macos",
+ "python": "3.12.10",
+ "exit": 1,
+ "summary": "83 failed, 777 passed, 14 skipped, 66 deselected in 51.16s",
+ "files": {
+  "?": {
+   "passed": 0,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 1,
+   "first": {}
+  },
+  "test_a_engine_helpers": {
+   "passed": 1,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_b_bridge_install": {
+   "passed": 12,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_b_cli": {
+   "passed": 12,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_b_crash": {
+   "passed": 11,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_b_launcher": {
+   "passed": 36,
+   "failed": 44,
+   "errored": 0,
+   "skipped": 0,
+   "first": {
+    "test_scope_start_failure_stops_the_session_and_names_it": "AssertionError: assert 2 == 4",
+    "test_readiness_failure_stops_the_session_and_quotes_bridge_errors": "AssertionError: assert 2 == 5",
+    "test_launch_reports_refresh_bridge_errors_and_unknown_renderer": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_qtfred_refuses_a_mission_that_is_not_a_staged_copy[SM1-01.fs2]": "AssertionError: assert 2 == 7",
+    "test_qtfred_refuses_a_mission_that_is_not_a_staged_copy[/elsewhere/m.fs2]": "AssertionError: assert 2 == 7",
+    "test_qtfred_accepts_a_staged_copy": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_extra_args_that_escape_the_session_are_refused[-portable_mode]": "AssertionError: assert '-portable_mode' in 'engine binary /bin/true is not an executable file'",
+    "test_extra_args_that_escape_the_session_are_refused[-output_sexps]": "AssertionError: assert '-output_sexps' in 'engine binary /bin/true is not an executable file'",
+    "test_extra_args_that_escape_the_session_are_refused[-output_scripting]": "AssertionError: assert '-output_scripting' in 'engine binary /bin/true is not an executable file'",
+    "test_extra_args_that_escape_the_session_are_refused[-profile_write_file]": "AssertionError: assert '-profile_write_file' in 'engine binary /bin/true is not an executable file'",
+    "test_extra_args_that_escape_the_session_are_refused[-mod]": "AssertionError: assert '-mod' in 'engine binary /bin/true is not an executable file'",
+    "test_extra_args_that_escape_the_session_are_refused[-start_mission]": "AssertionError: assert '-start_mission' in 'engine binary /bin/true is not an executable file'",
+    "test_extra_args_that_escape_the_session_are_refused[-pilot]": "AssertionError: assert '-pilot' in 'engine binary /bin/true is not an executable file'",
+    "test_output_flags_are_allowed_in_a_shadow_folder": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_harness_only_args_are_refused_even_in_a_shadow_folder[-portable_mode]": "AssertionError: assert '-portable_mode' in 'engine binary /bin/true is not an executable file'",
+    "test_harness_only_args_are_refused_even_in_a_shadow_folder[-mod]": "AssertionError: assert '-mod' in 'engine binary /bin/true is not an executable file'",
+    "test_harness_only_args_are_refused_even_in_a_shadow_folder[-start_mission]": "AssertionError: assert '-start_mission' in 'engine binary /bin/true is not an executable file'",
+    "test_harness_only_args_are_refused_even_in_a_shadow_folder[-pilot]": "AssertionError: assert '-pilot' in 'engine binary /bin/true is not an executable file'",
+    "test_output_flags_are_refused_in_a_working_folder_outside_shadows[-output_sexps]": "AssertionError: assert '-output_sexps' in 'engine binary /bin/true is not an executable file'",
+    "test_output_flags_are_refused_in_a_working_folder_outside_shadows[-profile_write_file]": "AssertionError: assert '-profile_write_file' in 'engine binary /bin/true is not an executable file'",
+    "test_sigterm_during_readiness_stops_the_session": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_interrupt_while_the_scope_starts_stops_the_session": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_interrupt_while_preparing_marks_the_session_failed": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_sigterm_while_waiting_for_exit_stops_the_session": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-PORTABLE_MODE]": "AssertionError: assert '-PORTABLE_MODE' in 'engine binary /bin/true is not an executable file'",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-Mod]": "AssertionError: assert '-Mod' in 'engine binary /bin/true is not an executable file'",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-OUTPUT_SEXPS]": "AssertionError: assert '-OUTPUT_SEXPS' in 'engine binary /bin/true is not an executable file'",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-Pilot]": "AssertionError: assert '-Pilot' in 'engine binary /bin/true is not an executable file'",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-get_flags]": "AssertionError: assert '-get_flags' in 'engine binary /bin/true is not an executable file'",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-GET_FLAGS]": "AssertionError: assert '-GET_FLAGS' in 'engine binary /bin/true is not an executable file'",
+    "test_flag_checks_ignore_case_and_cover_more_writers[-controlconfig_tbl]": "AssertionError: assert '-controlconfig_tbl' in 'engine binary /bin/true is not an executable file'",
+    "test_new_writers_are_allowed_in_a_shadow_folder": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_a_working_folder_outside_the_runtime_root_is_refused": "AssertionError: assert '/private/var/folders/n6/hn37q6pj7sj_9dmqqc2113800000gn/T/pytest-of-runner/pytest-0/test_a_working_folder_outside_0' in 'engine binary /bin/true is not an executable file'",
+    "test_mod_names_must_be_plain_folder_names[../evil]": "assert \"'../evil'\" in 'engine binary /bin/true is not an executable file'",
+    "test_mod_names_must_be_plain_folder_names[/abs/mod]": "assert \"'/abs/mod'\" in 'engine binary /bin/true is not an executable file'",
+    "test_mod_names_must_be_plain_folder_names[a/b]": "assert \"'a/b'\" in 'engine binary /bin/true is not an executable file'",
+    "test_mod_names_must_be_plain_folder_names[..]": "assert \"'..'\" in 'engine binary /bin/true is not an executable file'",
+    "test_mod_names_must_be_plain_folder_names[.]": "assert \"'.'\" in 'engine binary /bin/true is not an executable file'",
+    "test_mod_names_must_be_plain_folder_names[]": "assert \"''\" in 'engine binary /bin/true is not an executable file'",
+    "test_stop_ends_the_runner_before_stopping_the_scope": "assert ([None] == [0]",
+    "test_stop_waits_a_bounded_time_for_a_runner_that_ignores_sigterm": "AssertionError: assert 'ok' == 'timeout'",
+    "test_in_scope_matches_this_process_in_its_own_scope": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/self/cgroup'",
+    "test_launch_refuses_a_runtime_below_one_second[0]": "AssertionError: assert 'runtime' in 'engine binary /bin/true is not an executable file'",
+    "test_launch_refuses_a_runtime_below_one_second[-5]": "AssertionError: assert 'runtime' in 'engine binary /bin/true is not an executable file'"
+   }
+  },
+  "test_b_runner": {
+   "passed": 18,
+   "failed": 5,
+   "errored": 0,
+   "skipped": 5,
+   "first": {
+    "test_record_exit_names_every_signal[-64-SIGRTMAX]": "AssertionError: assert (-64 == -64 and 'SIG64' == 'SIGRTMAX'",
+    "test_xvfb_is_terminated_with_sigterm_blocked": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/self/oom_score_adj'",
+    "test_a_standalone_session_runs_without_xvfb_or_display": "PermissionError: [Errno 1] Operation not permitted",
+    "test_runner_fails_the_record_when_the_match_prefix_cannot_be_built": "AssertionError: unner/work/fso-harness-ci/fso-harness-ci/fsoctl/runner.py\", line 288, in main",
+    "test_runner_makes_itself_the_first_oom_victim": "subprocess.CalledProcessError: Command '['/Library/Frameworks/Python.framework/Versions/3.12/bin/python', '-c', 'from fsoctl import runner; print(runner.make_first_oom_victim())']' returned non-zero exit status 1."
+   }
+  },
+  "test_b_scope": {
+   "passed": 11,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 1,
+   "first": {}
+  },
+  "test_b_session": {
+   "passed": 10,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_bridge_install": {
+   "passed": 3,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_bridge_lua": {
+   "passed": 84,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_build": {
+   "passed": 5,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_c_game": {
+   "passed": 38,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_c_replay": {
+   "passed": 14,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_channel": {
+   "passed": 15,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_cli": {
+   "passed": 2,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_compare_unit": {
+   "passed": 9,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_crash_unit": {
+   "passed": 3,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_build": {
+   "passed": 16,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_compare": {
+   "passed": 10,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_cross": {
+   "passed": 41,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_docs": {
+   "passed": 16,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_frame_stats": {
+   "passed": 6,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_fred": {
+   "passed": 15,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_model_info": {
+   "passed": 4,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_small": {
+   "passed": 11,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_d_validate": {
+   "passed": 6,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_e_mutation_kills": {
+   "passed": 3,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_e_register": {
+   "passed": 0,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 2,
+   "first": {}
+  },
+  "test_envsetup": {
+   "passed": 5,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_errors": {
+   "passed": 2,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_examples": {
+   "passed": 12,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 4,
+   "first": {}
+  },
+  "test_fred_check_unit": {
+   "passed": 4,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_fred_unit": {
+   "passed": 6,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_game_unit": {
+   "passed": 44,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_guide": {
+   "passed": 9,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_launcher_unit": {
+   "passed": 26,
+   "failed": 12,
+   "errored": 0,
+   "skipped": 0,
+   "first": {
+    "test_prepare_leaves_no_json_or_bin_startup_files": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_role_validation": "AssertionError: {'match': 'm00000000', 'role': 'client', 'pilot_mode': 'create'}",
+    "test_prepare_writes_multi_cfg_and_switches": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_multiplayer_values_cannot_inject_flags_or_config": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_mission_name_cannot_start_with_a_dash_on_any_session": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_multiplayer_engine_flags_are_refused_as_extra_args": "AssertionError: -standalone",
+    "test_multiplayer_roles_need_a_created_pilot_and_refuse_vulkan_standalone": "AssertionError: host",
+    "test_match_roles_refuse_root": "AssertionError: assert 2 == 7",
+    "test_one_server_and_one_mission_per_match": "AssertionError: standalone",
+    "test_multi_launch_switch_and_multi_cfg_for_every_role": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_runner_runs_on_the_host_in_every_network_mode": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_private_network_needs_unshare_and_ip_and_refuses_root": "AssertionError: assert (2 == 4)"
+   }
+  },
+  "test_logs": {
+   "passed": 6,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_lua_check": {
+   "passed": 109,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_match_unit": {
+   "passed": 5,
+   "failed": 14,
+   "errored": 0,
+   "skipped": 0,
+   "first": {
+    "test_pid_start_reads_field_22_of_proc_stat": "assert (False)",
+    "test_create_records_holder_and_is_alive": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_dead_holder_detected_by_pid_start": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_inactive_scope_means_dead_even_with_live_pid": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_audit_writes_persistent_line": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_cli_match_create_list_remove": "assert (4 == 0)",
+    "test_pid_start_parses_a_comm_with_a_parenthesis_and_is_recent": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/uptime'",
+    "test_alive_needs_a_recorded_holder_and_a_live_record": "AssertionError: assert (False)",
+    "test_create_starts_the_holder_argv_in_its_own_scope": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_create_takes_the_launch_lock": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_alive_is_false_while_removing_and_nsenter_is_refused": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_run_inside_errors_become_false_in_listening": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_dead_match_is_written_back_once_with_one_audit_line": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'",
+    "test_match_cap": "FileNotFoundError: [Errno 2] No such file or directory: 'systemctl'"
+   }
+  },
+  "test_mcp_wrapper": {
+   "passed": 0,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 1,
+   "first": {}
+  },
+  "test_network_default": {
+   "passed": 8,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_paths": {
+   "passed": 5,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_record": {
+   "passed": 9,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_renderer": {
+   "passed": 6,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_scope": {
+   "passed": 3,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_session": {
+   "passed": 7,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_shadowdir": {
+   "passed": 3,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_sound": {
+   "passed": 43,
+   "failed": 8,
+   "errored": 0,
+   "skipped": 0,
+   "first": {
+    "test_sound_is_refused_for_qtfred_and_standalone": "AssertionError: assert (2 == 2 and '--sound' in 'engine binary /bin/true is not an executable file')",
+    "test_launch_returns_the_routing_check": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_a_failed_routing_check_stops_the_session_and_names_it": "KeyError: 'id'",
+    "test_prepare_creates_the_sink_and_names_it_in_prefs": "fsoctl.errors.HarnessError: engine binary /bin/true is not an executable file",
+    "test_a_prepare_that_fails_after_the_sink_unloads_it[write_device_prefs]": "ValueError: not enough values to unpack (expected 1, got 0)",
+    "test_a_prepare_that_fails_after_the_sink_unloads_it[check_device_names]": "ValueError: not enough values to unpack (expected 1, got 0)",
+    "test_a_prepare_failure_reports_a_sink_it_could_not_unload": "KeyError: 'sound_sink_error'",
+    "test_runner_gives_a_sound_session_the_engine_env_and_others_none": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/self/oom_score_adj'"
+   }
+  },
+  "test_telemetry_collision": {
+   "passed": 24,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_tools_parse": {
+   "passed": 4,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_vp": {
+   "passed": 10,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_wait_unit": {
+   "passed": 5,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_xinput_unit": {
+   "passed": 7,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  },
+  "test_xwin": {
+   "passed": 3,
+   "failed": 0,
+   "errored": 0,
+   "skipped": 0,
+   "first": {}
+  }
+ }
+}

@@ -90,7 +90,17 @@ def read_file(archive: Path, inner: str, max_bytes: int = MAX_READ_BYTES) -> byt
 
 
 def _safe_target(dest: Path, inner: str) -> Path:
-    """Return dest/inner, refusing absolute names and anything that resolves outside dest."""
+    """Return dest/inner, refusing absolute names and anything that resolves outside dest.
+
+    A name with a backslash or a colon is refused first, on every system (QA Plan B, SA-8):
+    on Windows those make a name mean another folder, drive, file stream or machine, and
+    resolving a path on another machine means contacting it (by Windows' path rules; not
+    run here). A name that starts with two
+    slashes is a network share there. VP entries are built with "/" by this module's reader.
+    """
+    if "\\" in inner or ":" in inner or inner.startswith("//"):
+        raise HarnessError(EXIT_REFUSED, f"archive entry {inner!r} would land outside {dest}",
+                           "the archive is damaged or hostile; nothing was written for it")
     target = (dest / inner).resolve()
     if inner.startswith("/") or not target.is_relative_to(dest.resolve()):
         raise HarnessError(EXIT_REFUSED, f"archive entry {inner!r} would land outside {dest}",

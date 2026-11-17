@@ -6,6 +6,7 @@ from tests.engine_helpers import launch_in_mission
 pytestmark = pytest.mark.engine
 
 
+@pytest.mark.linux       # records a key press, and the input verbs are Linux-only so far
 def test_replay_reissues_the_same_actions(engine_env, tmp_runtime):
     _, fso = engine_env
     src = launch_in_mission(fso, extra_args=["-seed", "7"])

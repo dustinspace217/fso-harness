@@ -18,7 +18,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from . import launcher, record, session, xwin
+from . import launcher, platform, record, session, xwin
 from .cli import register
 from .errors import EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_USAGE, HarnessError
 
@@ -93,7 +93,8 @@ def _release(sess: session.Session, *args: str) -> None:
 
 def window_id(sess: session.Session) -> str:
     """Return the X window id of the session's game window or qtFRED editor window."""
-    wid = xwin.main_window(sess.display or "", sess.engine_pid or 0, sess.kind, sess.mission)
+    wid = xwin.main_window(sess.display or "", session.window_owner(sess), sess.kind,
+                          sess.mission)
     if not wid:
         raise HarnessError(EXIT_NOT_FOUND, "no main window for the session's process",
                            "the engine may still be starting; check `fsoctl status <id>`")
@@ -154,6 +155,8 @@ def screenshot(sid: str, crop: str | None = None, scale: float | None = None,
     sess = launcher.require_running(sid)
     shots = session.run_dir(sess) / "shots"
     shots.mkdir(exist_ok=True)
+    if platform.capture is not None:
+        return _shot_from_pixels(sess, shots, crop, scale, full)
     origin = window_origin(sess) if full else None
     args = ["import", "-window", "root" if full else window_id(sess)]
     if crop:
@@ -174,6 +177,27 @@ def screenshot(sid: str, crop: str | None = None, scale: float | None = None,
     return out
 
 
+def _shot_from_pixels(sess: session.Session, shots: Path, crop: str | None,
+                      scale: float | None, full: bool) -> dict:
+    """screenshot() where the platform captures the window itself (platform.capture:
+    Windows): the same crop and scale arguments and the same result keys, with the pixels
+    cropped, scaled and written as a PNG in Python. The file name is claimed last, so a bad
+    argument or a failed capture leaves no empty file."""
+    if full:
+        # Linux captures its whole virtual display here; a Windows session has a desktop, not
+        # a display of a fixed size, and the feature exists for qtFRED's extra windows.
+        platform.unsupported("screenshot --full", "Plan C")
+    image = platform.capture.window_pixels(sess)
+    if crop:
+        image = platform.capture.crop(image, parse_crop(crop))
+    if scale:
+        image = platform.capture.scale(image, check_scale(scale))
+    width, height, rgb = image
+    path = new_shot_path(shots, "shot")
+    path.write_bytes(platform.capture.png_bytes(width, height, rgb))
+    return {"path": str(path), "width": width, "height": height}
+
+
 def _focus(sess: session.Session) -> None:
     """Give the session window keyboard focus (works without a window manager)."""
     _x(sess, "xdotool", "windowfocus", window_id(sess))
@@ -181,6 +205,7 @@ def _focus(sess: session.Session) -> None:
 
 def keys(sid: str, names: list[str], hold_ms: int = 0) -> dict:
     """Press keys via XTEST, each optionally held for hold_ms milliseconds."""
+    platform.needs_linux("the keys verb", "Plan C")
     if not 0 <= hold_ms <= HOLD_MS_MAX:
         raise HarnessError(EXIT_USAGE, f"bad hold_ms {hold_ms}",
                            f"use 0 (a tap) to {HOLD_MS_MAX} milliseconds")
@@ -227,6 +252,7 @@ def click(sid: str, x: int, y: int, button: int = 1, double: bool = False) -> di
 
     double=True makes two shorter held presses sized for FSO's 250 ms double-click window.
     """
+    platform.needs_linux("the click verb", "Plan C")
     sess = launcher.require_running(sid)
     _move(sess, x, y)
     if double:
@@ -242,6 +268,7 @@ def drag(sid: str, start: tuple[int, int], end: tuple[int, int], button: int = 1
 
     start and end are (x, y) window coordinates.
     """
+    platform.needs_linux("the drag verb", "Plan C")
     sess = launcher.require_running(sid)
     (x1, y1), (x2, y2) = start, end
     mid = ((x1 + x2) // 2, (y1 + y2) // 2)
@@ -268,6 +295,7 @@ def move(sid: str, x: int, y: int) -> dict:
     `xdotool getmouselocation`. WHY a separate verb: hovering (tooltips, highlighted buttons,
     UI that reacts to a resting pointer) had no tool; click and drag always press.
     """
+    platform.needs_linux("the move verb", "Plan C")
     sess = launcher.require_running(sid)
     _move(sess, x, y)
     out = _x(sess, "xdotool", "getmouselocation", "--shell")
@@ -289,6 +317,7 @@ def focus_neutral(sess: session.Session, x: int, y: int) -> None:
 
 def scroll(sid: str, x: int, y: int, clicks: int) -> dict:
     """Scroll the wheel at (x, y): positive clicks = up (button 4), negative = down (button 5)."""
+    platform.needs_linux("the scroll verb", "Plan C")
     if abs(clicks) > _SCROLL_MAX:   # refused, not clamped: the result must match what was sent
         raise HarnessError(EXIT_USAGE, f"scroll of {clicks} clicks is over the {_SCROLL_MAX} cap",
                            f"split it into calls of at most {_SCROLL_MAX}")

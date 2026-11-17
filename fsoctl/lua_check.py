@@ -33,6 +33,7 @@ import json
 import os
 import re
 import stat
+from collections.abc import Callable
 from pathlib import Path
 
 # Libraries the check applies to. WHY an allowlist and not "every library": a library table can be
@@ -262,17 +263,44 @@ def problems_in(code: str, bare: str, libs: dict[str, set[str]],
     return sorted(set(found))
 
 
-def _loaded_paths(code: str, bare: str) -> list[str]:
+# Whether a loaded path is absolute, by this OS's rule ("/x" on Linux, "C:/x" or "C:\x" on
+# Windows). A module-level name so tests can run the Windows rule on Linux.
+_is_absolute = os.path.isabs
+
+
+def _followed(path: str) -> bool:
+    """True for a path the check reads: absolute by this OS's rule, and not one that starts with
+    two separators. WHY not those (QA Plan B, SA-9): on Windows that is a share on another
+    machine, and opening it means contacting that machine as the user (by Windows' path rules;
+    not run here), before the code that names it has been allowed to run. Such a load is listed
+    as unchecked, on every system."""
+    network = len(path) > 1 and path[0] in "/\\" and path[1] in "/\\"
+    return _is_absolute(path) and not network
+
+
+def _path_of(literal: str) -> str:
+    """Return the path a Lua string literal names: in Lua source a backslash is written
+    twice, and the file the engine opens has one."""
+    return literal.replace("\\\\", "\\")
+
+
+def _loaded_paths(code: str, bare: str,
+                  is_absolute: Callable[[str], bool] | None = None) -> list[str]:
     """Return the absolute paths the code passes to loadfile/dofile, in order, de-duplicated.
 
     The call is found in the blanked text (so a commented-out load is ignored, QA CR-6); the
     path is read from the original text at the same offset, where the string literal still is.
+
+    WHY "absolute" is asked of the OS and not "starts with a slash" (found by the first
+    Windows run of the tests, 2026-11-17): a Windows path starts with a drive letter, so on
+    Windows no loaded file was ever read and every one was reported as unchecked.
     """
+    followed = _followed if is_absolute is None else is_absolute
     paths = []
     for m in _LOAD_CALL.finditer(bare):
         q = _QUOTED.match(code, m.end())
-        if q and q.group(2).startswith("/") and q.group(2) not in paths:
-            paths.append(q.group(2))
+        if q and followed(_path_of(q.group(2))) and _path_of(q.group(2)) not in paths:
+            paths.append(_path_of(q.group(2)))
     return paths
 
 
@@ -294,7 +322,7 @@ def check(code: str, scripting_json: Path) -> tuple[list[str], list[str]]:
     problems: at most _REPORT_MAX messages plus a count line. unchecked: loaded paths that were
     not read (relative, missing, special, oversize, or past _FILES_MAX).
     """
-    api = json.loads(scripting_json.read_text())
+    api = json.loads(scripting_json.read_text(encoding="utf-8"))
     libs, names = library_members(api), api_names(api)
     bare = strip_comments_and_strings(code)
     texts, unchecked = [(code, bare, "")], []
@@ -306,8 +334,8 @@ def check(code: str, scripting_json: Path) -> tuple[list[str], list[str]]:
             texts.append((text, strip_comments_and_strings(text), f"{path}: "))
     for m in _LOAD_CALL.finditer(bare):                  # relative loads are never followed
         q = _QUOTED.match(code, m.end())
-        if q and not q.group(2).startswith("/"):
-            unchecked.append(q.group(2))
+        if q and not _followed(_path_of(q.group(2))):
+            unchecked.append(_path_of(q.group(2)))
     decl = declared([b for _, b, _ in texts])
     keys = declared_keys([b for _, b, _ in texts])
     roots = table_roots([b for _, b, _ in texts])

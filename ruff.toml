@@ -3,7 +3,16 @@ line-length = 100
 target-version = "py312"
 
 [lint]
-select = ["E", "F", "W", "B", "SIM", "PL", "RUF"]
+# PLW1514: every open()/read_text()/write_text() names its encoding. Without one Python uses
+# the machine's own code page on Windows (cp1252), and the engine's files are UTF-8: the
+# first Windows run of the unit tier hit it in a test that read real OCR output. The rule
+# is still a "preview" rule in ruff, so it is switched on by name and no other preview rule
+# comes with it. Its limit: it sees open() and calls on a value it knows is a Path; a
+# `.read_text()` on a path built some other way passes unseen, so files of free text (the
+# agent guide) name UTF-8 by hand.
+preview = true
+explicit-preview-rules = true
+select = ["E", "F", "W", "B", "SIM", "PL", "RUF", "PLW1514"]
 # Magic-number comparisons are normal in tests and protocol code (exit codes, byte offsets).
 ignore = ["PLR2004"]
 
@@ -16,3 +25,8 @@ max-branches = 12
 # arguments into a dict (how the CLI modules meet the 5-argument limit) would hide them from the
 # schema, so the argument-count rules are off for this one file.
 "mcp/server.py" = ["PLR0913", "PLR0917"]
+# Tests and probes read and write files of their own making, nearly all ASCII; the few test
+# files that read real engine or tool output name UTF-8 where they read it.
+"tests/**" = ["PLW1514"]
+"probes/**" = ["PLW1514"]
+"examples/**" = ["PLW1514"]

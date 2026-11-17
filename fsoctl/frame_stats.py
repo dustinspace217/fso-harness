@@ -120,7 +120,7 @@ def frame_stats(mods: list[str], mission: str, seconds: float = 30.0, binary: st
     if not csv.exists():
         raise HarnessError(EXIT_ENGINE, "profiling.csv was not written", "see `fsoctl log`",
                            {"id": sid})
-    frames_ns = durations(csv.read_text())
+    frames_ns = durations(csv.read_text(encoding="utf-8"))
     info = session.load(sid).exit_info
     return {"id": sid, "renderer": renderer, **_windowed(sid, frames_ns, c0, c1),
             "window_method": WINDOW_METHOD, "window": {"start": c0, "end": c1},

@@ -6,7 +6,9 @@ rebinding, declarations, agent tables, unchecked libraries): a check that refuse
 be worse than none. IDs in comments (CR-n, TA-n, MU-n) are the QA findings each test pins.
 """
 import json
+import ntpath
 import os
+import posixpath
 
 import pytest
 
@@ -162,8 +164,10 @@ def _api_file(tmp_path):
 
 
 def _write(path, text):
+    """Write a script and return its path as Lua source would name it: with forward slashes
+    on every OS (a backslash inside a Lua string starts an escape)."""
     path.write_text(text)
-    return path
+    return path.as_posix()
 
 
 def test_check_follows_loadfile_one_level(tmp_path):
@@ -219,7 +223,7 @@ def test_special_file_is_not_read(tmp_path):
 def test_non_utf8_file_does_not_raise(tmp_path):
     bad = tmp_path / "bin.lua"
     bad.write_bytes(b"\xff\xfe ba.nope()")
-    found, _ = lua_check.check(f'dofile("{bad}")', _api_file(tmp_path))
+    found, _ = lua_check.check(f'dofile("{bad.as_posix()}")', _api_file(tmp_path))
     assert len(found) == 1                                                # TA-2
 
 
@@ -418,8 +422,9 @@ def test_check_runs_the_member_check_on_code_and_loaded_files(tmp_path):
     api.write_text(json.dumps(API_M))
     lib = _write(tmp_path / "lib.lua", "return me.Bogus")
     found, _ = lua_check.check(f'local f = loadfile("{lib}"); return me:nope()', api)
-    assert sorted(p.split(":")[0] if p.startswith("/") else p[:6] for p in found) == sorted(
-        [str(lib), ":nope("])
+    # each problem in the loaded file starts with that file's path; cut the rest off
+    assert sorted(lib if p.startswith(lib) else p[:6] for p in found) == sorted(
+        [lib, ":nope("])
 
 
 def test_no_self_function_colon_call_is_reported_once(tmp_path):
@@ -445,3 +450,66 @@ def test_chain_root_stops_at_a_keyword():
     assert _m("if hv.Weapon ~= nil then end") == []
     assert lua_check._chain_root("if hv.Weapon", len("if hv")) == "hv"
     assert lua_check._chain_root("a.b . c.D", len("a.b . c")) == "a"
+
+
+def test_a_windows_path_in_a_load_is_absolute_and_is_followed():
+    # Found by the first Windows run of this file (2026-11-17): only paths starting with "/"
+    # counted as absolute, so on Windows no loaded file was ever checked. In Lua source a
+    # backslash is written twice; the path the engine opens has one.
+    code = ('dofile("C:/mods/pilot.lua")\n'
+            'loadfile("D:\\\\x\\\\lib.lua")\n'
+            'dofile("rel.lua") dofile("C:/mods/pilot.lua")')
+    bare = lua_check.strip_comments_and_strings(code)
+    assert lua_check._loaded_paths(code, bare, ntpath.isabs) == [
+        "C:/mods/pilot.lua", "D:\\x\\lib.lua"]
+    assert lua_check._loaded_paths(code, bare, posixpath.isabs) == []
+    assert lua_check._loaded_paths('dofile("/abs/a.lua")', 'dofile(            )',
+                                   posixpath.isabs) == ["/abs/a.lua"]
+
+
+def test_relative_loads_are_listed_by_the_same_rule(tmp_path, monkeypatch):
+    monkeypatch.setattr(lua_check, "_is_absolute", ntpath.isabs)
+    _, unchecked = lua_check.check('dofile("C:/no/such.lua") dofile("rel.lua")',
+                                   _api_file(tmp_path))
+    assert unchecked == ["C:/no/such.lua", "rel.lua"]   # each named once: missing, relative
+
+
+def test_known_hole_a_load_not_written_as_a_quoted_path_is_neither_read_nor_listed(tmp_path):
+    # A KNOWN HOLE, pinned so that closing it is a deliberate change (found 2026-11-17 when a
+    # live check on Windows used the long-bracket form and the engine died of the loaded
+    # file's bad name). Only loadfile("...")/dofile('...') with a quoted path are followed.
+    # A long-bracket string, a call without parentheses and a path held in a variable are
+    # not read, and are not reported as unchecked either, so "passed" overstates what was
+    # looked at for them. Fix direction: list every load whose argument is not a quoted
+    # absolute path as unchecked.
+    bad = _write(tmp_path / "bad.lua", "ba.nope()")
+    api = _api_file(tmp_path)
+    assert len(lua_check.check(f'dofile("{bad}")', api)[0]) == 1          # the form that is read
+    for code in (f"dofile([[{bad}]])", f'dofile "{bad}"', f'local p = "{bad}"; dofile(p)'):
+        assert lua_check.check(code, api) == ([], []), code
+
+
+@pytest.mark.parametrize("literal, path", [
+    ('"//host/share/x.lua"', "//host/share/x.lua"),
+    ('"\\\\\\\\host\\\\share\\\\x.lua"', "\\\\host\\share\\x.lua"),
+    ('"/\\\\host/share/x.lua"', "/\\host/share/x.lua"),
+])
+def test_a_load_from_a_network_share_is_listed_and_never_opened(tmp_path, monkeypatch,
+                                                                literal, path):
+    # QA Plan B, SA-9: on Windows a path that starts with two separators is a share on
+    # another machine, and reading it means contacting that machine as the user. The check
+    # reads what the code loads BEFORE the code is allowed to run.
+    def never(path):
+        raise AssertionError(f"opened {path}")
+    monkeypatch.setattr(lua_check, "_read_script", never)
+    monkeypatch.setattr(lua_check, "_is_absolute", ntpath.isabs)
+    found, unchecked = lua_check.check(f"dofile({literal})", _api_file(tmp_path))
+    assert found == [] and unchecked == [path]
+
+
+@pytest.mark.parametrize("path, read", [("/", True), ("//", False), ("/a", True),
+                                        ("//a", False), ("/a//b", True)])
+def test_only_a_path_that_starts_with_two_separators_is_left_unread(monkeypatch, path, read):
+    # the edges of QA Plan B SA-9's rule: one character, exactly two, and two further in
+    monkeypatch.setattr(lua_check, "_is_absolute", lambda p: p.startswith("/"))
+    assert lua_check._followed(path) is read

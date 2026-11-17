@@ -1,0 +1,14 @@
+{
+ "os": "windows",
+ "library": "OpenAL32.dll",
+ "openal_is_soft": true,
+ "device": "OpenAL Soft",
+ "al_version": "1.1 ALSOFT 1.23.1",
+ "al_renderer": "OpenAL Soft",
+ "al_error": 0,
+ "wave_file_written": true,
+ "wave_bytes": 407108,
+ "wave_peak": 0.29084885120391846,
+ "wave_has_tone": true,
+ "notes": []
+}

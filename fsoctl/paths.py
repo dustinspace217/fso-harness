@@ -1,30 +1,31 @@
 """Where the harness keeps things.
 
-Runtime root: $FSO_HARNESS_RUNTIME (tests) else $XDG_RUNTIME_DIR/fso-harness, mode 0700 so other
-users cannot read session channels. Session ids are validated so a caller-supplied id can never
-escape the root.
+Runtime root: $FSO_HARNESS_RUNTIME (tests) else the OS's default (platform.dirs: on Linux
+$XDG_RUNTIME_DIR/fso-harness), mode 0700 so other users cannot read session channels. Session
+ids are validated so a caller-supplied id can never escape the root.
 """
 import os
 import re
 from pathlib import Path
 
+from . import platform
 from .errors import EXIT_NOT_FOUND, EXIT_USAGE, HarnessError
 
 BRIDGE_MOD = "fso_harness_bridge"
 _SID_RE = re.compile(r"^s[0-9a-f]{8}$")
 
 
+def runtime_root_path() -> Path:
+    """Return where the runtime root is, or would be made: $FSO_HARNESS_RUNTIME, else the
+    platform's own place. Creates nothing (a launch can be refused over this path before
+    any folder exists)."""
+    override = os.environ.get("FSO_HARNESS_RUNTIME")
+    return Path(override) if override else platform.dirs.runtime_root()
+
+
 def runtime_root() -> Path:
     """Return the private runtime root, creating it with mode 0700."""
-    override = os.environ.get("FSO_HARNESS_RUNTIME")
-    if override:
-        root = Path(override)
-    else:
-        xdg = os.environ.get("XDG_RUNTIME_DIR")
-        if not xdg:
-            raise HarnessError(EXIT_USAGE, "XDG_RUNTIME_DIR is not set",
-                               "run inside a user session or set FSO_HARNESS_RUNTIME")
-        root = Path(xdg) / "fso-harness"
+    root = runtime_root_path()
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     return root
@@ -38,14 +39,32 @@ def state_dir() -> Path:
     log must outlive both (QA SA-8).
     """
     override = os.environ.get("FSO_HARNESS_STATE")
-    if override:
-        root = Path(override)
-    else:
-        xdg = os.environ.get("XDG_STATE_HOME")
-        root = (Path(xdg) if xdg else Path.home() / ".local" / "state") / "fso-harness"
+    root = Path(override) if override else platform.dirs.state_root()
     root.mkdir(parents=True, exist_ok=True)
     os.chmod(root, 0o700)
     return root
+
+
+def sandbox_root() -> Path:
+    """Return the folder (mode 0700, created) holding sandbox sessions' prefs folders on disk.
+
+    $FSO_HARNESS_SANDBOX_ROOT (tests) else $XDG_CACHE_HOME/fso-harness/sandbox-runs else
+    ~/.cache/fso-harness/sandbox-runs. WHY on disk and not in the runtime root (QA 2026-11-13
+    AT2-1/SA2-1): the runtime root is the user's /run/user tmpfs (a few GB free); an untrusted
+    engine filling its prefs there fills the folder the desktop's sockets live in, and the
+    scope's memory limit is larger than that tmpfs. On disk the per-file limit and the runner's
+    size watchdog (runner._Watchdog) stop it first.
+    """
+    override = os.environ.get("FSO_HARNESS_SANDBOX_ROOT")
+    root = Path(override) if override else platform.dirs.sandbox_root()
+    root.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    return root
+
+
+def is_session_id(name: str) -> bool:
+    """True if `name` has the shape of a session id ("s" and 8 hex digits)."""
+    return bool(_SID_RE.match(name))
 
 
 def session_dir(sid: str) -> Path:
@@ -93,3 +112,8 @@ def channel_dir(prefs: Path) -> Path:
     and the bridge is always first in -mod.
     """
     return prefs / BRIDGE_MOD / "data" / "cache"
+
+
+# The same folder relative to the session's prefs folder (session.prefs_dir), for safefs, which
+# reaches every engine-written file from the prefs folder down (QA 2026-11-13 SA-1).
+CHANNEL_REL = f"{BRIDGE_MOD}/data/cache"

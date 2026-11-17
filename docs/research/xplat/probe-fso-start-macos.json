@@ -1,0 +1,36 @@
+{
+ "os": "macos",
+ "argv": [
+  "fs2_open_26_0_1_arm64-FASTDBG",
+  "-window",
+  "-nosound",
+  "-nomusic"
+ ],
+ "exit_code": null,
+ "seconds": 30.3,
+ "reached_gl_init": false,
+ "udp_ports": [],
+ "log_tail": [
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "  Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "  Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "  Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "  Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "  Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "  Requested SDL Pixel values = R: 8, G: 8, B: 8, depth: 24, stencil: 8, double-buffer: 1, FSAA: 0",
+  "Could not create OpenGL Context: Failed creating OpenGL pixel format",
+  "",
+  "Error: Unable to initialize display device!",
+  "This most likely means that your graphics drivers do not support the minimum required OpenGL version which is 3.2.",
+  "",
+  "File: gropengl.cpp",
+  "Line: 1331",
+  ""
+ ],
+ "notes": []
+}

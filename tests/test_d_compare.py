@@ -2,6 +2,7 @@
 import pytest
 
 from fsoctl import compare, session
+from fsoctl.errors import EXIT_LAUNCH, HarnessError
 
 
 def _state(goals=("G",), events=("E",), truncated=False):
@@ -32,6 +33,7 @@ def fake_runs(tmp_runtime, monkeypatch):
     def run_once(binary, launch, steps, renderer):
         return box["runs"].pop(0)
     monkeypatch.setattr(compare, "_run_once", run_once)
+    monkeypatch.setattr(compare.programs, "find", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(compare, "diff_images",
                         lambda a, b, out: {"mean_abs_diff": box["mae"], "diff_image": out})
 
@@ -117,3 +119,52 @@ def test_ship_list_without_a_truncation_flag_is_not_certified(fake_runs):
     assert r["identical_within_tolerance"] is False and r["states_identical"] is False
     assert r["snapshots"]["t"]["ships_truncated"] is None
     assert any("unknown" in x for x in r["not_identical_because"])
+
+
+def test_a_machine_without_imagemagick_is_refused_before_any_session_starts(fake_runs,
+                                                                           monkeypatch):
+    # Seen on Windows (2026-11-17), where ImageMagick is not part of the system: both
+    # sessions ran, and only then the picture comparison failed with a bare
+    # FileNotFoundError. The check now comes first, on every OS.
+    monkeypatch.setattr(compare.programs, "find", lambda name: None)
+    started = []
+    monkeypatch.setattr(compare, "_run_once", lambda *a: started.append(a))
+    for call in (_compare, lambda: compare.renderer_compare("/a", {}, [{"snapshot": "t"}])):
+        with pytest.raises(HarnessError) as e:
+            call()
+        assert e.value.code == EXIT_LAUNCH and "ImageMagick" in e.value.message
+        assert "magick" in e.value.hint
+    assert started == []
+
+
+def test_with_imagemagick_present_the_runs_start(fake_runs, monkeypatch):
+    monkeypatch.setattr(compare.programs, "find", lambda name: f"/usr/bin/{name}")
+    fake_runs({"t": {}}, {"t": {}})
+    assert _compare()["a"] == "sa000000"
+
+
+def test_the_program_looked_for_is_magick(fake_runs, monkeypatch):
+    # QA Plan B, MU-3: any other name on PATH is not ImageMagick
+    monkeypatch.setattr(compare.programs, "find",
+                        lambda name: "/usr/bin/magick" if name == "magick" else None)
+    compare._need_magick()
+    monkeypatch.setattr(compare.programs, "find",
+                        lambda name: None if name == "magick" else f"/usr/bin/{name}")
+    with pytest.raises(HarnessError):
+        compare._need_magick()
+
+
+def test_on_windows_imagemagick_is_started_by_the_full_path_it_was_found_at(monkeypatch):
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(argv)
+        return compare.subprocess.CompletedProcess(argv, 0, "", "0 (0)")
+    monkeypatch.setattr(compare.subprocess, "run", run)
+    monkeypatch.setattr(compare.programs, "find", lambda name: rf"C:\tools\{name}.exe")
+    monkeypatch.setattr(compare.platform, "NAME", "windows")
+    compare.diff_images("a.png", "b.png", "d.png")
+    assert seen[0][0] == r"C:\tools\magick.exe"
+    monkeypatch.setattr(compare.platform, "NAME", "linux")
+    compare.diff_images("a.png", "b.png", "d.png")
+    assert seen[1][0] == "magick"                       # the plain name, as before

@@ -108,6 +108,33 @@ def test_backtrace_debugs_exactly_the_matched_dump(monkeypatch):
     assert "321342" not in cmd          # never a bare pid match
 
 
+def test_backtrace_runs_gdb_without_init_files_or_auto_load(monkeypatch):
+    # QA 2026-11-13 AT-1/CR-8: ~/.gdbinit (pwndbg sets `auto-load safe-path /`) and a script
+    # embedded in the binary must not run; the arguments are pinned exactly.
+    cmds = []
+    monkeypatch.setattr(crash.subprocess, "run", lambda cmd, **kw: cmds.append(cmd) or
+                        subprocess.CompletedProcess(cmd, 0, stdout="", stderr=""))
+    crash._backtrace(_CORE)
+    assert cmds[0][-1] == ("--debugger-arguments=-nx -iex 'set auto-load off' -batch "
+                           "-ex 'thread apply all bt 30'")
+
+
+def test_a_sandbox_sessions_report_never_runs_the_debugger(tmp_runtime, monkeypatch):
+    # Phase B (attacker seat): gdb would still parse the untrusted ELF and core on the host.
+    s = session.new_session(kind="game", binary="/x/fs2_open", fs2path="/tmp", mods=[],
+                            mission=None, renderer="opengl", width=320, height=240, switches={},
+                            allow_eval=False, extra_args=[], network="sandbox")
+    s.engine_pid, s.status = 4242, "exited"
+    s.exit_info = {"returncode": -6, "signal": "SIGABRT", "at": 1.0}
+    session.save(s)
+    monkeypatch.setattr(crash, "_find_core", lambda sess, sig: dict(_CORE))
+    monkeypatch.setattr(crash, "_backtrace", lambda core: pytest.fail("the debugger ran"))
+    out = crash.report(s.id)
+    assert out["backtrace"] is None and out["signal"] == "SIGABRT"
+    assert any(h.startswith("backtrace skipped: the build ran in the sandbox") for h in
+               out["hints"])
+
+
 def test_backtrace_keeps_only_frame_lines(monkeypatch):
     def fake_run(cmd, **kw):
         assert kw["env"]["DEBUGINFOD_URLS"] == ""      # never fetch symbols over the network

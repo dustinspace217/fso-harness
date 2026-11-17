@@ -11,15 +11,16 @@ import os
 import signal
 import subprocess
 import time
-from pathlib import Path
 
-from . import channel, launcher, logs, scope, session
+from . import channel, launcher, logs, platform, session
 from .cli import register
 from .errors import HarnessError
+from .platform import scope
 
 _TOOL_TIMEOUT = 60
 _GDB_TIMEOUT = 180      # loading a large debug core takes a while
 _BT_FRAMES = 30
+GDB_SAFETY = "-nx -iex 'set auto-load off'"   # see _backtrace
 _BT_MAX_LINES = 400   # all threads x 30 frames can run to hundreds of lines; keep reports sane
 _LOG_TAIL = 60
 # Signals whose default action dumps core (signal(7), "Core" column).
@@ -89,7 +90,10 @@ def _backtrace(core: dict) -> list[str] | None:
     dump 2026-10-12: a wrong exe or a window outside it finds nothing).
     """
     env = {**os.environ, "DEBUGINFOD_URLS": ""}   # never fetch symbols over the network
-    gdb_args = f"-batch -ex 'thread apply all bt {_BT_FRAMES}'"
+    # -nx: no init file (a user's ~/.gdbinit may load a plugin that sets `auto-load safe-path /`,
+    # as pwndbg does); -iex 'set auto-load off', before the binary loads: no script embedded in
+    # the binary (.debug_gdb_scripts) or found beside it runs (QA 2026-11-13 AT-1/CR-8).
+    gdb_args = f"{GDB_SAFETY} -batch -ex 'thread apply all bt {_BT_FRAMES}'"
     logged = int(core["time"])
     try:
         r = subprocess.run(["coredumpctl", "--no-pager", f"--since=@{logged}",
@@ -110,13 +114,13 @@ def _artifacts(sess: session.Session) -> dict:
     try:
         log = logs.read(sess.id, tail=_LOG_TAIL)
         out["log_tail"], out["problems"] = log["lines"], log["problems"]
+        if "truncated_to_last_bytes" in log:      # problems cover only the log's end (CR2-2)
+            out["log_truncated_to_last_bytes"] = log["truncated_to_last_bytes"]
     except HarnessError as e:   # no log yet: say so in the report instead of failing it
         out["log_error"] = e.message
     if sess.kind == "game":
         ch = channel.Channel(sess)
-        popups = ch.dir / "popups.txt"
-        if popups.exists():
-            out["popups"] = [json.loads(x) for x in popups.read_text().splitlines() if x.strip()]
+        out["popups"] = ch.popups()
         out["last_heartbeat"] = ch.heartbeat()
     return out
 
@@ -150,6 +154,12 @@ def _end_hints(sess: session.Session, sig: str | None, core: dict | None) -> lis
     if sess.ended_by == "runtime_limit":
         hints.append(f"the scope's runtime limit ({sess.runtime_sec} s) ended the run; launch "
                      "with a larger --runtime")
+    elif sess.ended_by == "disk_limit":
+        hints.append("the sandbox's size watchdog ended the run: its prefs folder passed its cap, "
+                     "or the disk's free space fell under the floor or dropped too far since "
+                     "launch (a drop can come from another program writing to the same disk); "
+                     "see runner.log and `journalctl -t fso-harness`; the prefs folder was "
+                     "emptied")
     elif sess.ended_by == "oom":
         hints.append(f"the scope hit its memory limit (MemoryMax={sess.memory_max}) and the "
                      f"kernel's OOM killer ended a process; see {journal}")
@@ -169,20 +179,63 @@ def report(sid: str) -> dict:
     if launcher.alive(sess):
         return {"id": sid, "status": "running",
                 "hints": ["the engine is still running; stop it or wait for it to exit first"]}
+    if launcher._runs_out_of_sight(sess):
+        # Its group is not found here, yet one of its recorded processes runs: a session of
+        # another Windows login (launcher._runs_out_of_sight). There is no end to report.
+        return {"id": sid, "status": "running",
+                "hints": ["the session still runs, in another Windows login: this one cannot "
+                          "see its process group; ask from the login that started it"]}
+    if platform.crash is not None:
+        return _report_from_dump(sess)
     exit_info = sess.exit_info or {}
     sig = exit_info.get("signal")
     core = _find_core(sess, sig)
     hints = _end_hints(sess, sig, core)
     backtrace = None
-    if core and core.get("corefile") == "present":
+    if sess.network == "sandbox":
+        # Phase B (attacker seat): even with init files and auto-load off, gdb on the host would
+        # parse an ELF and a core file the untrusted build controls. No debugger runs for it.
+        hints.append("backtrace skipped: the build ran in the sandbox (untrusted), and the "
+                     "debugger would parse its binary and core on the host")
+    elif core and core.get("corefile") == "present":
         backtrace = _backtrace(core)
         if not backtrace:
             hints.append("gdb produced no backtrace; is gdb installed?")
-    if not Path(logs.sources(sess)["fso"]).exists():
+    if not logs.exists(sess, "fso"):
         hints.append("release build: no fs2_open.log; a debug build (FSO_BIN_DEBUG) logs much more")
     return {"id": sid, "status": sess.status, "exit_info": sess.exit_info,
             "ended_by": sess.ended_by, "signal": sig, "core": core, "backtrace": backtrace,
             **_artifacts(sess), "hints": hints}
+
+
+def _report_from_dump(sess: session.Session) -> dict:
+    """report() where the engine leaves its own crash dump (platform.crash: Windows).
+
+    The same keys as the Linux report, so a reader needs one shape: "signal" and "core" are
+    None (Windows has neither), "dump" names the engine's minidump when there is one, and
+    "backtrace" is the debugger's stack from it. The debugger runs only when it is installed
+    and a dump was found; each missing piece is a line in "hints".
+    """
+    crashes = platform.crash
+    hints: list[str] = []
+    dump = None
+    try:
+        dump = crashes.find_dump(sess)
+    except OSError as e:        # the search refused (too many files): say so, keep reporting
+        hints.append(str(e))
+    hints += crashes.end_hints(sess, dump, launcher._gone(sess))
+    backtrace = None
+    if dump and crashes.find_debugger() is None:
+        hints.append(crashes.NO_DEBUGGER)
+    elif dump:
+        backtrace = crashes.backtrace(dump)
+        hints.append(crashes.SYMBOLS_NOTE if backtrace
+                     else "cdb produced no backtrace from the dump")
+    if not logs.exists(sess, "fso"):
+        hints.append("release build: no fs2_open.log; a debug build (FSO_BIN_DEBUG) logs much more")
+    return {"id": sess.id, "status": sess.status, "exit_info": sess.exit_info,
+            "ended_by": sess.ended_by, "signal": None, "core": None, "dump": dump,
+            "backtrace": backtrace, **_artifacts(sess), "hints": hints}
 
 
 def _cfg_crash(p: argparse.ArgumentParser) -> None:

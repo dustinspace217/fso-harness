@@ -15,6 +15,7 @@ from typing import Any
 from . import channel, docs, launcher, logs, lua_check, session
 from .cli import register
 from .errors import EXIT_BRIDGE, EXIT_ENGINE, EXIT_REFUSED, EXIT_TIMEOUT, EXIT_USAGE, HarnessError
+from .platform import safefs
 
 _MODES = ("eval", "run", "number")
 _LIST_LIMIT_MAX = 1000
@@ -343,19 +344,20 @@ def _log_start(sess: session.Session) -> dict:
     mid-line; QA CR-3, SF-6). No newline in the last _LOG_TAIL bytes of a longer file: start at
     the end.
     """
-    srcs = logs.sources(sess)
-    path = srcs["fso"] if srcs["fso"].exists() else srcs["engine"]
+    source = "fso" if logs.exists(sess, "fso") else "engine"
+    cur = {"sess": sess, "source": source, "offset": 0}
     try:
-        with open(path, "rb") as f:
+        with safefs.open_read(logs.base(sess, source), logs.REL[source]) as f:
             size = os.fstat(f.fileno()).st_size
             back = min(size, _LOG_TAIL)
             f.seek(size - back)
             nl = f.read(back).rfind(b"\n")
-    except FileNotFoundError:
-        return {"path": path, "offset": 0, "fso": srcs["fso"]}
+    except OSError:              # missing, or no longer a plain file (safefs): start at 0
+        return cur
     if nl < 0:   # no newline in the tail: a short file is one unfinished line, a long one is old
         nl = -1 if back == size else back - 1
-    return {"path": path, "offset": size - back + nl + 1, "fso": srcs["fso"]}
+    cur["offset"] = size - back + nl + 1
+    return cur
 
 
 def _new_log_lines(cur: dict) -> list[str]:
@@ -365,16 +367,17 @@ def _new_log_lines(cur: dict) -> list[str]:
     all of it every poll) and leaves an unfinished last line for the next poll. If the debug log
     appears after the wait started, the wait switches to it from its first byte: all of it is new.
     """
-    if cur["path"] != cur["fso"] and cur["fso"].exists():
-        cur.update(path=cur["fso"], offset=0)
+    if cur["source"] != "fso" and logs.exists(cur["sess"], "fso"):
+        cur.update(source="fso", offset=0)
     try:
-        with open(cur["path"], "rb") as f:
+        with safefs.open_read(logs.base(cur["sess"], cur["source"]),
+                              logs.REL[cur["source"]]) as f:
             size = os.fstat(f.fileno()).st_size
             if size < cur["offset"]:          # truncated or replaced: read it from the start
                 cur["offset"] = 0
             f.seek(cur["offset"])
             data = f.read(min(size - cur["offset"], _LOG_READ_MAX))
-    except FileNotFoundError:
+    except OSError:              # missing, or no longer a plain file (safefs)
         return []
     end = data.rfind(b"\n")
     if end < 0:

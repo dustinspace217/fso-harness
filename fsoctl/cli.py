@@ -61,15 +61,34 @@ class _Parser(argparse.ArgumentParser):
 
 
 def _on_sigterm(signum: int, frame: object) -> None:
-    """SIGTERM handler: exit with 143 by raising SystemExit, so `finally:` blocks run (C8).
+    """Stop-request handler: exit with 143 by raising SystemExit, so `finally:` blocks run (C8).
 
     WHY: the MCP server ends a timed-out fsoctl with SIGTERM; Python's default action kills the
     process at once, skipping every verb's `finally: stop(...)` and leaving the engine running.
     Further SIGTERMs are ignored from here on, so a repeated signal cannot cut that cleanup short
     (fix-wave-2 R3); SIGKILL still ends the process.
+
+    On Windows the request is Ctrl-Break and `signum` is SIGBREAK (see _stop_signal); the
+    handler is the same, and it is that signal which is ignored from then on.
     """
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    signal.signal(signum, signal.SIG_IGN)
     raise SystemExit(143)
+
+
+def _stop_signal() -> int:
+    """Return the signal that asks this command to stop: SIGTERM, or SIGBREAK on Windows.
+
+    WHY another one there: Windows has no way for one process to send another SIGTERM
+    (Python's terminate() is a hard kill). What a parent can send is the console event
+    Ctrl-Break, which Python delivers to this process as SIGBREAK (measured in the VM,
+    2026-11-16: the handler ran and `finally` blocks ran). One limit, also measured: the
+    request waits for a blocking call to return, so a single long sleep is not interrupted.
+
+    Decided by what the signal module has: Python defines SIGBREAK on Windows and nowhere
+    else. (Not by platform.NAME, which tests set to "windows" on Linux, where the name does
+    not exist.)
+    """
+    return getattr(signal, "SIGBREAK", signal.SIGTERM)
 
 
 def _as_harness_error(e: Exception) -> HarnessError:
@@ -138,12 +157,13 @@ def main(argv: list[str] | None = None) -> int:
         return e.code
     # signal.signal works only in the main thread; an fsoctl run as a command always is there.
     in_main = threading.current_thread() is threading.main_thread()
-    previous = signal.signal(signal.SIGTERM, _on_sigterm) if in_main else None
+    stop_signal = _stop_signal()
+    previous = signal.signal(stop_signal, _on_sigterm) if in_main else None
     try:
         result, code = _run(args)
     finally:
         if in_main:
-            signal.signal(signal.SIGTERM, previous)
+            signal.signal(stop_signal, previous)
     print(json.dumps(result) if args.json else _render(result))
     return code
 

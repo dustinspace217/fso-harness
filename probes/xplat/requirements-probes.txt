@@ -1,0 +1,15 @@
+# Packages the cross-platform probes need (Plan A, Tasks 5-9). Installed inside CI probe jobs
+# only, never by the harness itself (pyproject.toml keeps dependencies = []). The packages a
+# probe imports are pinned exactly, and so are the pyobjc packages the macOS one pulls in (they
+# would otherwise float, QA SA-3); deeper dependencies are not hash-locked.
+PySDL2==0.9.17
+pysdl2-dll==2.32.10
+PyOpenGL==3.1.10
+comtypes==1.4.17 ; sys_platform == "win32"
+PySide6==6.12.0
+psutil==7.2.2
+pyobjc-framework-ApplicationServices==12.2.2 ; sys_platform == "darwin"
+pyobjc-core==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.2.2 ; sys_platform == "darwin"
+pyobjc-framework-CoreText==12.2.2 ; sys_platform == "darwin"

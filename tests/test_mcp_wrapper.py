@@ -1,12 +1,15 @@
 import struct
 import subprocess
+import sys
 import zlib
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
-VENV_PY = REPO / "mcp" / ".venv" / "bin" / "python"
+# The MCP wrapper's own venv (mcp/setup.sh, mcp\setup.ps1); Windows lays a venv out differently.
+VENV_PY = (REPO / "mcp" / ".venv" / "Scripts" / "python.exe" if sys.platform == "win32"
+           else REPO / "mcp" / ".venv" / "bin" / "python")
 
 
 def _tiny_png(path: Path) -> None:
@@ -22,7 +25,7 @@ def _tiny_png(path: Path) -> None:
 
 def test_mcp_server_maps_tools_to_fsoctl(tmp_path):
     if not VENV_PY.exists():
-        pytest.skip("run mcp/setup.sh first (creates mcp/.venv)")
+        pytest.skip("run mcp/setup.sh (Windows: mcp\\setup.ps1) first; it creates mcp/.venv")
     png = tmp_path / "s.png"
     _tiny_png(png)
     r = subprocess.run([str(VENV_PY), str(REPO / "tests" / "mcp_check.py"), str(png)],

@@ -279,6 +279,21 @@ test("files_are_replaced_without_a_moment_of_absence", function(W)
 	eq(cache(W)["ready.json.tmp"], nil, "temp file left")
 end)
 
+test("where_rename_cannot_replace_a_file_the_heartbeat_still_updates", function(W)
+	-- Windows: the C library's rename() fails when the target exists, and cf_rename is that
+	-- rename() (cfile.cpp). Seen on the first Windows session (2026-11-16): ready.json was
+	-- written once and never again, so every later status read a stale heartbeat.
+	local H = boot(W)
+	local rename = cf.renameFile
+	cf.renameFile = function(old, new, path)
+		if cache(W)[new] ~= nil then return true end   -- refused ("true" is the engine's failure)
+		return rename(old, new, path)
+	end
+	frames(H, H.HEARTBEAT_EVERY * 2 + 1)
+	eq(heartbeat(W).frame, H.HEARTBEAT_EVERY * 2 + 1, "latest heartbeat")
+	eq(cache(W)["ready.json.tmp"], nil, "temp file left")
+end)
+
 test("a_command_whose_claim_fails_is_not_run", function(W)
 	-- If the bridge's rename does not take the file (the caller withdrew it first), the bridge
 	-- must not read or run it.

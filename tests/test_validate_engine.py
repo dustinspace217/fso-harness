@@ -37,6 +37,7 @@ def test_validate_debug_build_reports_a_bad_table(engine_env, tmp_runtime):
     assert any("No Such Laser" in p["text"] for p in r["problems"])
 
 
+@pytest.mark.linux
 def test_crash_report_after_a_segfault(engine_env, tmp_runtime):
     _, fso = engine_env
     r = launcher.launch(LaunchRequest(binary=str(fso), mods=MODS, skip_movies=True))

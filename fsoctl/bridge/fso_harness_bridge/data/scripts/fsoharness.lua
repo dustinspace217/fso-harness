@@ -88,6 +88,12 @@ H.read_all = read_all
 -- target atomically on Linux, so readers always find either the old file or the new one. Deleting
 -- first left a gap with no ready.json, which status read as "no heartbeat" (QA finding XK-6).
 -- The rename's return value is not used: the engine inverts it (see run_command).
+-- On Windows the C library's rename() refuses to replace an existing file, and cf_rename is that
+-- rename(): the first Windows session (2026-11-16) wrote ready.json once and never again. So if
+-- the temp file is still there after the rename, the target is deleted and the rename tried once
+-- more. Only that path has a moment with no target; Linux never takes it. A reader that has the
+-- target open at that moment makes the delete fail on Windows; the write is then skipped and the
+-- next frame's write replaces it.
 local function write_atomic(name, text)
 	local tmp = name .. ".tmp"
 	local f = cf.openFile(tmp, "w", H.DIR)
@@ -95,6 +101,10 @@ local function write_atomic(name, text)
 	f:write(text)
 	f:close()
 	cf.renameFile(tmp, name, H.DIR)
+	if cf.fileExists(tmp, H.DIR) then
+		cf.deleteFile(name, H.DIR)
+		cf.renameFile(tmp, name, H.DIR)
+	end
 	return cf.fileExists(name, H.DIR) and not cf.fileExists(tmp, H.DIR)
 end
 H.write_atomic = write_atomic

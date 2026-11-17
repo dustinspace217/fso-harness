@@ -1,0 +1,335 @@
+{
+ "label": "normal",
+ "fred2": "fred2_open_26_2_0_x64_SSE2.exe",
+ "window_size": null,
+ "main_window": true,
+ "open_mission_ok": true,
+ "seconds": {
+  "start_to_main_window": 3.0,
+  "open_mission": 1.6,
+  "ids_check": 45.1,
+  "text_routes": 9.3,
+  "combo_routes": 491.5,
+  "save_and_read": 2.1,
+  "ship_editor": 558.5,
+  "event_tree": 8.3,
+  "capture_main": 0.0
+ },
+ "notes": [
+  "main window title after Open: 'probe7-normal.fs2 - FRED2_OPEN 26.2.0 - FreeSpace2 Mission Editor'"
+ ],
+ "message_boxes": [
+  {
+   "title": "Error",
+   "text": [
+    "Probe 7b (SF Basilisk) is used as an arrival anchor by wing Zeta (and possibly elsewhere too), but it does not have a hangar bay!"
+   ],
+   "answered": "Cancel"
+  }
+ ],
+ "desktop": "Default",
+ "main_title": "Untitled - FRED2_OPEN 26.2.0 - FreeSpace2 Mission Editor",
+ "main_class": "Afx:0000000140000000:b:0000000000010003:0000000000000006:0000000000140119",
+ "ui_roundtrip_ms": {
+  "empty_mission": 30.4,
+  "mission_loaded": 17.7
+ },
+ "test_ship": {
+  "name": "Psamtik",
+  "next_presses": 5,
+  "wing": "None",
+  "ai_class": {
+   "count": 7,
+   "index": 3,
+   "text": "Captain"
+  }
+ },
+ "ship_editor": {
+  "title": "Edit Ship",
+  "controls": 82,
+  "enabled_controls": 75,
+  "ids_by_windows": {
+   "all_known": true,
+   "counts": {
+    "fred2": 54,
+    "windows": 25,
+    "combo_child": 3,
+    "other": 0
+   },
+   "other": []
+  },
+  "ids_by_uia": {
+   "seconds": 45.1,
+   "elements": 113,
+   "all_known": true,
+   "counts": {
+    "fred2": 52,
+    "windows": 0,
+    "combo_child": 3,
+    "other": 0
+   },
+   "other": [],
+   "ids_only_windows_sees": [
+    1100,
+    1372
+   ],
+   "ids_only_uia_sees": []
+  }
+ },
+ "capture_ship_editor": {
+  "printwindow_ok": true,
+  "width": 503,
+  "height": 882,
+  "distinct_colours": 6,
+  "file": "fred2-normal-ship-editor.bmp"
+ },
+ "text_uia_setvalue": {
+  "control_took": true,
+  "data_took": true,
+  "error": null,
+  "enabled": true,
+  "before": "Psamtik",
+  "after": "Probe 7a",
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": "Probe 7a",
+  "boxes": []
+ },
+ "text_wm_settext": {
+  "control_took": true,
+  "data_took": true,
+  "error": null,
+  "enabled": true,
+  "before": "Probe 7a",
+  "after": "Probe 7b",
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": "Probe 7b",
+  "boxes": []
+ },
+ "combo_ai_uia_select": {
+  "control_id": 1194,
+  "control_took": false,
+  "data_took": false,
+  "error": null,
+  "enabled": true,
+  "before": {
+   "count": 7,
+   "index": 3,
+   "text": "Captain"
+  },
+  "target_index": 4,
+  "list_items_seen": 140,
+  "before_collapse": {
+   "count": 7,
+   "index": 4,
+   "text": "Major"
+  },
+  "collapse_error": null,
+  "after": {
+   "count": 7,
+   "index": 3,
+   "text": "Captain"
+  },
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": {
+   "count": 7,
+   "index": 3,
+   "text": "Captain"
+  },
+  "boxes": []
+ },
+ "combo_ai_message": {
+  "control_id": 1194,
+  "control_took": true,
+  "data_took": true,
+  "error": null,
+  "enabled": true,
+  "before": {
+   "count": 7,
+   "index": 3,
+   "text": "Captain"
+  },
+  "target_index": 4,
+  "after": {
+   "count": 7,
+   "index": 4,
+   "text": "Major"
+  },
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": {
+   "count": 7,
+   "index": 4,
+   "text": "Major"
+  },
+  "boxes": []
+ },
+ "combo_ai_message_notify": {
+  "control_id": 1194,
+  "control_took": true,
+  "data_took": true,
+  "error": null,
+  "enabled": true,
+  "before": {
+   "count": 7,
+   "index": 4,
+   "text": "Major"
+  },
+  "target_index": 5,
+  "after": {
+   "count": 7,
+   "index": 5,
+   "text": "Colonel"
+  },
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": {
+   "count": 7,
+   "index": 5,
+   "text": "Colonel"
+  },
+  "boxes": []
+ },
+ "combo_class_uia_select": {
+  "control_id": 1003,
+  "control_took": false,
+  "data_took": false,
+  "error": null,
+  "enabled": true,
+  "before": {
+   "count": 112,
+   "index": 78,
+   "text": "GVD Hatshepsut"
+  },
+  "target_index": 79,
+  "list_items_seen": 2020,
+  "before_collapse": {
+   "count": 112,
+   "index": 79,
+   "text": "SF Dragon"
+  },
+  "collapse_error": null,
+  "after": {
+   "count": 112,
+   "index": 78,
+   "text": "GVD Hatshepsut"
+  },
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": {
+   "count": 112,
+   "index": 78,
+   "text": "GVD Hatshepsut"
+  },
+  "boxes": []
+ },
+ "combo_class_message": {
+  "control_id": 1003,
+  "control_took": true,
+  "data_took": true,
+  "error": null,
+  "enabled": true,
+  "before": {
+   "count": 112,
+   "index": 78,
+   "text": "GVD Hatshepsut"
+  },
+  "target_index": 79,
+  "after": {
+   "count": 112,
+   "index": 79,
+   "text": "SF Dragon"
+  },
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": {
+   "count": 112,
+   "index": 79,
+   "text": "SF Dragon"
+  },
+  "boxes": []
+ },
+ "combo_class_message_notify": {
+  "control_id": 1003,
+  "control_took": true,
+  "data_took": true,
+  "error": null,
+  "enabled": true,
+  "before": {
+   "count": 112,
+   "index": 79,
+   "text": "SF Dragon"
+  },
+  "target_index": 80,
+  "after": {
+   "count": 112,
+   "index": 80,
+   "text": "SF Basilisk"
+  },
+  "refill": {
+   "other_ship": "Epsilon 1"
+  },
+  "after_refill": {
+   "count": 112,
+   "index": 80,
+   "text": "SF Basilisk"
+  },
+  "boxes": []
+ },
+ "saved_file": {
+  "file_written": true,
+  "ship": {
+   "class": "SF Basilisk",
+   "ai_class": "Colonel"
+  }
+ },
+ "event_tree": {
+  "opened": true,
+  "items": 62,
+  "items_after_expand": 72,
+  "tree_class": "SysTreeView32",
+  "list_seconds": 2.2,
+  "first_names": [
+   "Iota 1 Dock",
+   "Iota 2 Dock",
+   "Iota 1 Undock",
+   "Iota 2 Undock",
+   "Iota 1 Exchange"
+  ],
+  "expand_errors": [],
+  "expanded": 10,
+  "names_after_expand": [
+   "Iota 1 Dock",
+   "when",
+   "Iota 2 Dock",
+   "when",
+   "Iota 1 Undock",
+   "when",
+   "Iota 2 Undock",
+   "when"
+  ]
+ },
+ "capture_events": {
+  "printwindow_ok": true,
+  "width": 672,
+  "height": 739,
+  "distinct_colours": 9,
+  "file": "fred2-normal-events.bmp"
+ },
+ "capture_main": {
+  "printwindow_ok": true,
+  "width": 1040,
+  "height": 736,
+  "distinct_colours": 33,
+  "file": "fred2-normal-main.bmp"
+ }
+}

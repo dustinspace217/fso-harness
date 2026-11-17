@@ -19,8 +19,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import envsetup, launcher, match, session, sound
-from .errors import HarnessError
+from . import envsetup, launcher, match, sandbox, session, sound
+from .errors import EXIT_LAUNCH, HarnessError
 
 _XVFB_READY_TIMEOUT = 10.0
 _XVFB_EXTRA_HEIGHT = 80  # room below the game window for qtFRED's status bar and dialogs
@@ -119,14 +119,14 @@ def _signal_name(code: int) -> str | None:
 
 def _memory_events_path() -> Path:
     """Return this process's cgroup memory.events file (the scope's, since we run inside it)."""
-    rel = Path("/proc/self/cgroup").read_text().strip().split("::", 1)[-1]
+    rel = Path("/proc/self/cgroup").read_text(encoding="utf-8").strip().split("::", 1)[-1]
     return Path("/sys/fs/cgroup") / rel.lstrip("/") / "memory.events"
 
 
 def _oom_kills() -> int:
     """Return the scope cgroup's oom_kill count (0 when the file cannot be read)."""
     try:
-        text = _memory_events_path().read_text()
+        text = _memory_events_path().read_text(encoding="utf-8")
     except OSError:
         return 0    # no cgroup v2 memory controller here: we cannot tell, so report no OOM
     for line in text.splitlines():
@@ -196,17 +196,79 @@ def _reap(engine: subprocess.Popen) -> int | None:
         return None
 
 
-def engine_argv(sess: session.Session) -> list[str]:
-    """Return the engine's argv with its network prefix: the match's namespace (nsenter) for a
-    match session, launcher.PRIVATE_NET_PREFIX for a private one (the default; an old record with
-    no network field counts as private), bare for `--network real`. Only the engine is wrapped:
-    this runner and its Xvfb stay on the host."""
+def engine_argv(sess: session.Session, env: dict | None = None,
+                info_fd: int | None = None, seccomp_fd: int | None = None) -> list[str]:
+    """Return the engine's argv with its network prefix: the match's prefix for a match session
+    (nsenter into a private match's namespace, nothing for a real match), the bwrap prefix for a
+    sandbox session (sandbox.argv; needs the child `env`, bwrap's `info_fd` and `seccomp_fd`),
+    PRIVATE_NET_PREFIX
+    for a private ordinary session (an old record with no network field counts as private), bare
+    for a real one. Only the engine is wrapped: this runner and its Xvfb stay on the host."""
     argv = launcher.build_argv(sess)
     if sess.match:
         return match.nsenter_prefix(match.load(sess.match)) + argv
     if sess.network == "real":
         return argv
+    if sess.network == "sandbox":
+        if env is None or info_fd is None or seccomp_fd is None:
+            # Never fall through to the private prefix: that would run an untrusted build with
+            # the whole filesystem in reach while the record says "sandbox".
+            raise HarnessError(EXIT_LAUNCH, "a sandbox session needs its environment and info fd",
+                               "internal error: report it")
+        return sandbox.argv(sess, env, info_fd, seccomp_fd) + argv
     return launcher.PRIVATE_NET_PREFIX + argv
+
+
+def _popen_engine(sess: session.Session, env: dict, log) -> subprocess.Popen | sandbox.Engine:
+    """Start the engine (wrapped for its network) writing to `log`; return its process handle.
+
+    For a sandbox session the handle is a sandbox.Engine around bwrap whose pid is the engine's
+    HOST pid (the one /proc/<pid>/maps and coredumpctl need) and which signals it through a pidfd,
+    found through bwrap's --info-fd pipe. EXIT_LAUNCH is raised (bwrap killed first if it still
+    runs) when bwrap ended without reporting a pid (the sandbox itself could not be set up; this
+    is recorded by the runner, not guessed from log text) or when the sandbox runs but its engine
+    was not found; each of the two waits is bounded by sandbox.START_TIMEOUT. If the engine
+    started and already ended, the handle carries pid None and the caller's wait() records that.
+    """
+    if sess.network != "sandbox":
+        return subprocess.Popen(engine_argv(sess), cwd=sess.cwd or sess.fs2path, env=env,
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+    rfd, wfd = os.pipe()
+    filter_r, filter_w = os.pipe()     # the seccomp program: 72 bytes, far below a pipe's buffer
+    try:
+        os.write(filter_w, sandbox.seccomp_filter())
+        os.close(filter_w)
+        proc = subprocess.Popen(engine_argv(sess, env, wfd, filter_r), env=env,
+                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                                pass_fds=(wfd, filter_r))
+    finally:
+        os.close(wfd)                 # bwrap holds its own copy; EOF must come from bwrap
+        os.close(filter_r)
+    # A pidfd on bwrap for the watchdog's kill (QA TA4-3), opened here, before anything below
+    # can poll() or wait() bwrap: until it is reaped its pid cannot be reused, so the pidfd is
+    # bwrap's for certain (an open after a reap could name another process).
+    bwrap_pidfd: int | None = None
+    try:
+        bwrap_pidfd = sandbox._open_pidfd(proc.pid)   # a failure here still ends bwrap below
+        init = sandbox.read_info(rfd, sandbox.START_TIMEOUT)
+        if init is None:
+            raise HarnessError(EXIT_LAUNCH, "the sandbox did not start (bwrap reported no "
+                               "process)", "see `fsoctl log <id>`: engine.log holds bwrap's "
+                               "messages; check that unprivileged user namespaces are allowed")
+        found = sandbox.find_engine(init, lambda: proc.poll() is None, sandbox.START_TIMEOUT)
+        if found is None and proc.poll() is None:
+            raise HarnessError(EXIT_LAUNCH, "the sandbox is running but its engine was not found",
+                               "see `fsoctl log <id>` (engine.log holds bwrap's own messages)")
+    except BaseException:
+        # Includes _Terminated from a stop landing here: the caller never got the handle, so the
+        # sandbox is ended now instead of living on until the runner exits.
+        proc.kill()
+        if bwrap_pidfd is not None:
+            os.close(bwrap_pidfd)
+        raise
+    finally:
+        os.close(rfd)
+    return sandbox.Engine(proc, *(found or (None, None)), bwrap_pidfd)
 
 
 def _run_engine(sid: str, env: dict, started: float) -> int:
@@ -218,17 +280,23 @@ def _run_engine(sid: str, env: dict, started: float) -> int:
     with open(session.run_dir(sess) / "engine.log", "ab") as log:
         def mark_running(s: session.Session) -> None:
             s.engine_pid, s.status = proc.pid, "running"
+            if s.network == "sandbox":
+                s.window_pid = sandbox.ENGINE_NS_PID     # SDL's _NET_WM_PID inside the sandbox
         # The try opens BEFORE Popen, so the engine's registration is covered by the handler that
         # reaps it: a stop landing there used to skip _reap and main ended Xvfb under a live
         # engine (QA SL-3, XFA-1/XFK-1). Still unguarded: a stop inside Popen itself (while it
         # forks) or before its handle is stored in `proc`, within a second of launch; no harness
         # path stops a session at that moment.
-        proc: subprocess.Popen | None = None
+        proc: subprocess.Popen | sandbox.Engine | None = None
+        dog: sandbox.Watchdog | None = None
+        # The prefs disk's free space before the engine writes anything: the watchdog's
+        # baseline for the free-space-drop check (QA SA4-1/AT4-2).
+        baseline = (sandbox.free_bytes(session.prefs_dir(sess)) if sess.network == "sandbox"
+                    else None)
         try:
-            proc = subprocess.Popen(engine_argv(sess), cwd=sess.cwd or sess.fs2path,
-                                    env=env, stdin=subprocess.DEVNULL, stdout=log,
-                                    stderr=subprocess.STDOUT)
+            proc = _popen_engine(sess, env, log)
             session.update(sid, mark_running)
+            dog = _watch(sess, proc, baseline)
             code = proc.wait(timeout=_time_left(sess, started))
             _block_sigterm()      # the run is over; nothing may interrupt the record (SL2-7)
         except _Terminated:
@@ -247,8 +315,24 @@ def _run_engine(sid: str, env: dict, started: float) -> int:
                 cause = _termination_cause(sid, started)
             _record_exit(sid, _reap(proc), cause)
             return 143            # same as the other harness-ended runs (main's docstring)
-    _record_exit(sid, code)
+        finally:
+            if dog is not None:
+                dog.stop()
+                # A trip kills the sandbox and then empties prefs from the watchdog's thread;
+                # the runner waits for that (bounded) instead of exiting under it.
+                dog.join(sandbox.WATCHDOG_JOIN)
+    _record_exit(sid, code, "disk_limit" if dog is not None and dog.tripped else None)
     return code
+
+
+def _watch(sess: session.Session, proc, baseline: int | None = None) -> sandbox.Watchdog | None:
+    """Start and return the prefs-size watchdog for a sandbox session (None for any other);
+    baseline is the prefs disk's free bytes before the engine started."""
+    if sess.network != "sandbox" or not isinstance(proc, sandbox.Engine):
+        return None
+    dog = sandbox.Watchdog(sess.id, session.prefs_dir(sess), proc, baseline)
+    dog.start()
+    return dog
 
 
 def _time_left(sess: session.Session, started: float) -> float | None:
@@ -266,11 +350,26 @@ def _fail(sid: str, error: str) -> int:
     return 1
 
 
+def make_first_oom_victim() -> int:
+    """Raise this process's oom_score_adj to the maximum and return the value read back.
+
+    Every child (Xvfb, the engine) inherits it, so a global out-of-memory takes the session before a
+    desktop application. Done here and not as a scope property: systemd rejects OOMScoreAdjust on a
+    transient scope ("Unknown assignment", 2026-10-16), and a process may raise its own score
+    without privilege.
+    """
+    with open("/proc/self/oom_score_adj", "w", encoding="utf-8") as f:
+        f.write("1000")
+    with open("/proc/self/oom_score_adj", encoding="utf-8") as f:
+        return int(f.read())
+
+
 def main(sid: str) -> int:
     """Run one session to completion; return the engine's exit code (1 on runner failure, 143
     when the scope was ended). Xvfb is terminated on every path (QA SL-8)."""
     started = time.monotonic()
     signal.signal(signal.SIGTERM, _on_sigterm)
+    make_first_oom_victim()
     xvfb = None
     try:
         sess = session.update(sid, lambda s: setattr(s, "runner_pid", os.getpid()))
@@ -295,7 +394,12 @@ def main(sid: str) -> int:
                                 sess.kind)
         if sess.sound:
             env.update(sound.engine_env(sess.id))
-        Path(env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
+        if sess.network == "sandbox":
+            # Folder variables point inside the sandbox, whose own tmpfs folders hold them.
+            sandbox.sandbox_env(env)
+            sandbox.write_identity(run)
+        else:
+            Path(env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
         try:
             return _run_engine(sid, env, started)
         except OSError as e:

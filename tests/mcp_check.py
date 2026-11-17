@@ -61,6 +61,8 @@ from fsoctl import bridge_install, launcher  # noqa: E402  (after server put the
 
 server.launch(ready_timeout=240)
 _, budget = calls[-1]
+# plan A QA TA-9: no network given -> no --network, so the CLI's own default (real) decides
+assert not any(a.startswith("--network") for a in calls[-1][0]), calls[-1][0]
 # launch.lock wait + bridge.lock wait + scope start (10 s) + readiness + a stop on failure: the
 # runner wait, the scope's polite stop (20 s) and its kill wait (QA CR-1/SL-2/TA-4).
 from fsoctl import scope  # noqa: E402
@@ -105,7 +107,8 @@ CASES = {
     "frame_stats": dict(mission="m.fs2", seconds=5),
     "compare": dict(a="/a", b="/b", steps_file="/s.json", image_tol=0.02),
     "renderer_compare": dict(steps_file="/s.json"),
-    "match_create": dict(label="-l"), "match_list": {}, "match_remove": dict(id="m0a1b2c3d"),
+    "match_create": dict(label="-l", network="private"), "match_list": {},
+    "match_remove": dict(id="m0a1b2c3d"),
 }
 parser = cli.build_parser()
 tool_names = {t.name for t in asyncio.run(server.mcp.list_tools())}
@@ -139,19 +142,127 @@ argv = calls[-1][0][calls[-1][0].index("--json"):]
 assert "--no-stop-on-collision" not in argv, argv
 assert vars(parser.parse_args(argv))["stop_on_collision"] is True, argv
 
-# ---- timeout path: SIGTERM first, so fsoctl's cleanup can run -------------------------------
+# ---- the two Windows options reach the real parser (plan B Tasks 5 and 9) --------------------
+server.launch(visible=True)
+argv = calls[-1][0][calls[-1][0].index("--json"):]
+assert "--visible" in argv and vars(parser.parse_args(argv))["visible"] is True, argv
+server.launch()
+assert "--visible" not in calls[-1][0], calls[-1][0]
+server.build("/w/tree", config="FastDebug")
+argv = calls[-1][0][calls[-1][0].index("--json"):]
+assert "--config=FastDebug" in argv and vars(parser.parse_args(argv))["config"] == "FastDebug"
+server.build("/w/tree")
+assert not any(a.startswith("--config") for a in calls[-1][0]), calls[-1][0]
+
+# ---- timeout path: a stop request first, so fsoctl's cleanup can run -------------------------
+# SIGTERM on Linux; Ctrl-Break (SIGBREAK in the child) on Windows, where it arrives through
+# the console this process shares with the child. The child waits in short sleeps, as
+# fsoctl's own waits do: on Windows one long sleep is not interrupted by the request.
+STOP_NAME = "SIGBREAK" if sys.platform == "win32" else "SIGTERM"
 with tempfile.TemporaryDirectory() as d:
-    marker = Path(d) / "got-sigterm"
+    marker = Path(d) / "got-stop-request"
     child = ("import signal, sys, time\n"
-             f"signal.signal(signal.SIGTERM, lambda *a: (open({str(marker)!r}, 'w').close(), "
+             f"signal.signal(signal.{STOP_NAME}, lambda *a: (open({str(marker)!r}, 'w').close(), "
              "sys.exit(0)))\n"
-             "time.sleep(30)\n")
+             "for _ in range(300):\n"
+             "    time.sleep(0.1)\n")
     try:
         real_exec([sys.executable, "-c", child], 1)
         raise AssertionError("expected TimeoutExpired")
     except subprocess.TimeoutExpired:
         pass
-    assert marker.exists(), "timed-out child was not sent SIGTERM before being killed"
+    assert marker.exists(), f"timed-out child was not sent {STOP_NAME} before being killed"
+
+
+# ---- how fsoctl is started and asked to stop, per OS (plan B Task 10; Popen replaced) --------
+# Measured in the VM on 2026-11-16 (results note, "Stopping a timed-out fsoctl"): Ctrl-Break
+# reaches a child only through a console it shares with the sender. A child given
+# CREATE_NO_WINDOW has a console of its own and never gets it; a sender with no console at all
+# cannot send it (WinError 6), and its child would open a visible console window unless
+# started with CREATE_NO_WINDOW.
+class FakeProc:
+    """Stands in for subprocess.Popen: records how it was started and what was done to it."""
+    hangs = 1                 # how many communicate() calls time out before one returns
+    signal_fails = False      # whether send_signal raises as it does with no shared console
+    last = None
+
+    def __init__(self, cmd, **kw):
+        self.cmd, self.kw, self.calls, self.waits = cmd, kw, [], 0
+        FakeProc.last = self
+
+    def communicate(self, timeout=None):
+        self.calls.append(("communicate", timeout))
+        self.waits += 1
+        if self.waits <= FakeProc.hangs:
+            raise subprocess.TimeoutExpired(self.cmd, timeout)
+        return "", ""
+
+    def send_signal(self, sig):
+        self.calls.append(("send_signal", sig))
+        if FakeProc.signal_fails:
+            raise OSError(6, "The handle is invalid")
+
+    def terminate(self):
+        self.calls.append(("terminate",))
+
+    def kill(self):
+        self.calls.append(("kill",))
+
+
+def timed_out(windows, console=True, hangs=1, signal_fails=False):
+    """Run the real _exec against FakeProc as on the given OS; return the fake process."""
+    FakeProc.hangs, FakeProc.signal_fails = hangs, signal_fails
+    saved = (server._WINDOWS, server._has_console, server.subprocess.Popen)
+    server._WINDOWS, server._has_console = windows, lambda: console
+    server.subprocess.Popen = FakeProc
+    try:
+        real_exec(["fsoctl-stand-in"], 7)
+        raise AssertionError("expected TimeoutExpired")
+    except subprocess.TimeoutExpired:
+        return FakeProc.last
+    finally:
+        server._WINDOWS, server._has_console, server.subprocess.Popen = saved
+
+
+GRACE = server.TERM_GRACE_SEC
+NEW_GROUP, NO_WINDOW, CTRL_BREAK = 0x200, 0x08000000, 1      # WinBase.h / WinCon.h values
+if sys.platform == "win32":                                    # the names Windows itself gives
+    assert (NEW_GROUP, NO_WINDOW, CTRL_BREAK) == (
+        subprocess.CREATE_NEW_PROCESS_GROUP, subprocess.CREATE_NO_WINDOW,
+        __import__("signal").CTRL_BREAK_EVENT)
+
+p = timed_out(windows=False)                                   # Linux: unchanged
+assert "creationflags" not in p.kw, p.kw
+assert p.calls == [("communicate", 7), ("terminate",), ("communicate", GRACE)], p.calls
+p = timed_out(windows=False, hangs=2)
+assert p.calls[-2:] == [("kill",), ("communicate", None)], p.calls
+
+p = timed_out(windows=True, console=True)                      # shares this server's console
+assert p.kw["creationflags"] == NEW_GROUP, hex(p.kw["creationflags"])
+assert p.calls == [("communicate", 7), ("send_signal", CTRL_BREAK), ("communicate", GRACE)]
+p = timed_out(windows=True, console=True, hangs=2)             # asked, did not go: ended
+assert p.calls == [("communicate", 7), ("send_signal", CTRL_BREAK), ("communicate", GRACE),
+                   ("kill",), ("communicate", None)], p.calls
+assert ("terminate",) not in p.calls                           # a hard kill on Windows: never first
+
+p = timed_out(windows=True, console=False)                     # no console: no window, no asking
+assert p.kw["creationflags"] == NEW_GROUP | NO_WINDOW, hex(p.kw["creationflags"])
+assert p.calls == [("communicate", 7), ("kill",), ("communicate", None)], p.calls
+
+p = timed_out(windows=True, console=True, signal_fails=True)   # the request could not be sent
+assert p.calls == [("communicate", 7), ("send_signal", CTRL_BREAK), ("kill",),
+                   ("communicate", None)], p.calls
+
+server._exec = real_exec                                       # what the timeout says, per OS
+saved = (server._WINDOWS, server._has_console, server.subprocess.Popen)
+FakeProc.hangs, FakeProc.signal_fails = 1, False
+server._WINDOWS, server._has_console, server.subprocess.Popen = True, lambda: False, FakeProc
+try:
+    said = json.loads(server._ctl("status", "s12345678", timeout=7))
+finally:
+    server._WINDOWS, server._has_console, server.subprocess.Popen = saved
+    server._exec = fake_exec
+assert said["ok"] is False and "SIGTERM" not in said["hint"] and "list" in said["hint"], said
 
 # ---- guidance the server carries: instructions at session start, prompts as /commands --------
 ins = server.mcp.instructions

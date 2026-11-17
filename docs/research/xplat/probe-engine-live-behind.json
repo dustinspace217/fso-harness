@@ -1,0 +1,87 @@
+{
+ "label": "behind",
+ "fso": "fs2_open_26_2_0_x64_SSE2-FASTDBG.exe",
+ "port_asked": 7821,
+ "no_unfocused_pause": true,
+ "gl_init": true,
+ "behind": true,
+ "udp_ports": [
+  "0.0.0.0:7821",
+  ":::7821"
+ ],
+ "notes": [],
+ "front_window_running": true,
+ "desktop": "Default",
+ "renderer": [
+  "OpenGL Renderer  : llvmpipe (LLVM 23.1.4, 256 bits)",
+  "OpenGL Version   : 4.6 (Core Profile) Mesa 26.2.6 (git-a44c011e2d)"
+ ],
+ "windows": [
+  {
+   "class": "SDL_app",
+   "title": "FreeSpace 2"
+  }
+ ],
+ "capture": {
+  "printwindow_ok": true,
+  "width": 1040,
+  "height": 807,
+  "distinct_colours": 20,
+  "file": "engine-behind-1.bmp"
+ },
+ "idle_frames": {
+  "captures": 8,
+  "different_pictures": 4
+ },
+ "foreground": {
+  "before": false,
+  "set_call_ok": null,
+  "at_key_time": false
+ },
+ "posted_key": {
+  "posts_accepted": true,
+  "pilot_files": [],
+  "new_game_events": [],
+  "reached_engine": false
+ },
+ "retry_in_front": {
+  "foreground": {
+   "before": true,
+   "set_call_ok": true,
+   "at_key_time": true
+  },
+  "posted_key": {
+   "posts_accepted": true,
+   "pilot_files": [
+    "a.FreeSpace2.csg",
+    "a.json"
+   ],
+   "new_game_events": [
+    "Got event GS_EVENT_MAIN_MENU (0) in state GS_STATE_INITIAL_PLAYER_SELECT (37)"
+   ],
+   "reached_engine": true
+  }
+ },
+ "capture_after_keys": {
+  "printwindow_ok": true,
+  "width": 1040,
+  "height": 807,
+  "distinct_colours": 73,
+  "file": "engine-behind-3.bmp"
+ },
+ "game_events": [
+  "Got event GS_EVENT_GAME_INIT (49) in state NOT A VALID STATE (0)",
+  "Got event GS_EVENT_MAIN_MENU (0) in state GS_STATE_INITIAL_PLAYER_SELECT (37)"
+ ],
+ "exited_early": null,
+ "log_tail": [
+  "HUDPREFS => Saving player HUD preferences (testing)...",
+  "HUDPREFS: Saving player HUD preferences to 'a.hdp'...",
+  "HUDPREFS: Finished saving player HUD preferences.",
+  "CSG => Saving complete!",
+  "No XSTR entry in strings.tbl for index 503",
+  "No XSTR entry in strings.tbl for index 504",
+  "No XSTR entry in strings.tbl for index 506",
+  "No XSTR entry in strings.tbl for index 505"
+ ]
+}

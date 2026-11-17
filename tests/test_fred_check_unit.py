@@ -4,7 +4,7 @@ from fsoctl import fred
 
 # tesseract's reading (2x scaled) of qtFRED's real "Pre-save Error Check" dialog for a copy of
 # SM1-01 whose event "Iota 1 Dock" names a missing ship "Ghost 9" (probe results section 10).
-OCR = (Path(__file__).parent / "data" / "checker_ocr.txt").read_text()
+OCR = (Path(__file__).parent / "data" / "checker_ocr.txt").read_text(encoding="utf-8")
 
 
 def test_parse_checker_finds_the_entry():

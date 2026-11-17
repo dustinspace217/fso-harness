@@ -135,3 +135,25 @@ def test_read_file_has_a_size_cap(tmp_path):
     with pytest.raises(HarnessError) as e:
         vp.read_file(arc, "data/missions/big.fs2", max_bytes=1024)
     assert e.value.code == EXIT_REFUSED
+
+
+@pytest.mark.parametrize("name", ["..\\..\\zz9", "data\\zz9.tbl", "C:zz9", "C:\\zz9",
+                                  "zz9.tbl:hidden", "\\\\zz9host\\share\\x", "//zz9host/share/x"])
+def test_an_entry_that_means_another_place_on_windows_is_refused_before_its_path_is_built(
+        tmp_path, name, monkeypatch):
+    # QA Plan B, SA-8: on Windows a backslash separates folders, "C:" names a drive, a
+    # colon after a file name names a second stream of it, and a name starting with two
+    # separators is a network share; joining such a name to the target folder and resolving
+    # it, as the check did first, already goes there. Refused on every system, before that.
+    arc = tmp_path / "t.vp"
+    write_vp(arc, FILES, raw_names=((name, b"x"),))
+    real, resolved = type(tmp_path).resolve, []
+
+    def resolve(self, *arguments, **keywords):
+        resolved.append(str(self))
+        return real(self, *arguments, **keywords)
+    monkeypatch.setattr(type(tmp_path), "resolve", resolve)
+    with pytest.raises(HarnessError) as e:
+        vp.extract(str(arc), "*", str(tmp_path / "out"))
+    assert e.value.code == EXIT_REFUSED
+    assert not any("zz9" in path for path in resolved)

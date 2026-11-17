@@ -1,0 +1,36 @@
+{
+ "probe": "win-job-name",
+ "python": "3.12.10",
+ "cases": {
+  "plain": {
+   "creator_exit": 0,
+   "child": 3060,
+   "assigned": true,
+   "ready": "child ready held=False",
+   "child_alive_before": true,
+   "opened": false,
+   "error": 2,
+   "child_alive_after": true
+  },
+  "inherit": {
+   "creator_exit": 0,
+   "child": 1628,
+   "assigned": true,
+   "ready": "child ready held=False",
+   "child_alive_before": true,
+   "opened": true,
+   "terminated": true,
+   "child_alive_after": false
+  },
+  "reopen": {
+   "creator_exit": 0,
+   "child": 4360,
+   "assigned": true,
+   "ready": "child ready held=True",
+   "child_alive_before": true,
+   "opened": true,
+   "terminated": true,
+   "child_alive_after": false
+  }
+ }
+}

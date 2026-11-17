@@ -24,8 +24,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from . import paths, scope, session
+from . import paths, session
 from .errors import EXIT_REFUSED, HarnessError
+from .platform import scope
 
 STAMP = ".harness-version"
 # Contract C5: the bridge reads its version from this file at load time (bridge_info "version").
@@ -53,7 +54,7 @@ def _current(target: Path, version: str) -> bool:
     if not target.is_dir():
         return False
     vfile = target / VERSION_FILE
-    return (vfile.is_file() and vfile.read_text() == version
+    return (vfile.is_file() and vfile.read_text(encoding="utf-8") == version
             and _tree_hash(target) == version)
 
 
@@ -70,8 +71,8 @@ def _replace(fs2: Path, target: Path, version: str) -> None:
         new = work / "new"
         shutil.copytree(paths.bridge_source(), new, ignore=shutil.ignore_patterns(".gitkeep"))
         (new / VERSION_FILE).parent.mkdir(parents=True, exist_ok=True)
-        (new / VERSION_FILE).write_text(version)
-        (new / STAMP).write_text(version)
+        (new / VERSION_FILE).write_text(version, encoding="utf-8")
+        (new / STAMP).write_text(version, encoding="utf-8")
         old = work / "old"
         if target.exists():
             os.rename(target, old)

@@ -1,4 +1,5 @@
 """Group D tests for the cross-family review addendum (X-2, X-3, X-5, X-6, X-7, XK-3..5, XK-9)."""
+import sys
 import os
 import struct
 
@@ -7,6 +8,9 @@ import pytest
 from fsoctl import build, docs, fred, launcher, record, scenario, scope, session, vp, xinput
 from fsoctl.errors import EXIT_FAILED, EXIT_NOT_FOUND, EXIT_USAGE, HarnessError
 from tests.test_vp import write_vp
+
+# A stand-in engine binary: the launcher only needs an executable file to exist.
+BINARY = sys.executable if sys.platform == "win32" else "/bin/true"
 
 
 # ---- XK-3: the directory offset must lie inside the file ---------------------------------------
@@ -30,6 +34,8 @@ def test_failed_build_carries_exit_failed(tmp_path, tmp_runtime, monkeypatch):
     (wt / "build" / "CMakeCache.txt").write_text("")
     monkeypatch.setattr(scope, "caps", lambda **kw: [])
     monkeypatch.setattr(scope, "is_active", lambda unit: False)
+    monkeypatch.setattr(build.programs, "find", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(build.platform, "NAME", "linux")     # the Linux build command
 
     def run(cmd, stdout=None, **kw):
         stdout.write(b"/w/a.cpp:1:1: error: nope\n")
@@ -104,18 +110,19 @@ def test_not_found_names_the_skipped_archives(tmp_path):
     assert e.value.code == EXIT_NOT_FOUND and "a_broken.vp" in e.value.message
 
 
+@pytest.mark.linux
 def test_open_reports_skipped_archives(tmp_path, tmp_runtime, monkeypatch):
     (tmp_path / "a_broken.vp").write_bytes(b"junk")
     write_vp(tmp_path / "b.vp", {"data/missions/m.fs2": b"found"})
     monkeypatch.setenv("FS2PATH", str(tmp_path))
-    s = session.new_session(kind="qtfred", binary="/bin/true", fs2path=str(tmp_path), mods=[],
+    s = session.new_session(kind="qtfred", binary=BINARY, fs2path=str(tmp_path), mods=[],
                             mission="/x", renderer="opengl", width=1, height=1, switches={},
                             allow_eval=False, extra_args=[])
     monkeypatch.setattr(launcher, "launch", lambda req: {"id": s.id})
     monkeypatch.setattr(fred, "_window", lambda sess: "0x1")
     monkeypatch.setattr(xinput, "_x", lambda sess, *a: "")
     monkeypatch.setattr(fred, "_LAYOUT_SETTLE", 0)
-    r = fred.open("m.fs2", binary="/bin/true")
+    r = fred.open("m.fs2", binary=BINARY)
     assert [x["archive"] for x in r["skipped_archives"]] == [str(tmp_path / "a_broken.vp")]
 
 
@@ -172,7 +179,7 @@ def test_docs_key_ignores_files_outside_the_fingerprint(fs2):
 @pytest.fixture
 def xcalls(tmp_runtime, monkeypatch):
     """Record every X tool call; require_running / window_id faked."""
-    s = session.new_session(kind="game", binary="/bin/true", fs2path="/tmp", mods=[],
+    s = session.new_session(kind="game", binary=BINARY, fs2path="/tmp", mods=[],
                             mission=None, renderer="opengl", width=1, height=1, switches={},
                             allow_eval=False, extra_args=[])
     calls: list[tuple] = []
@@ -183,6 +190,7 @@ def xcalls(tmp_runtime, monkeypatch):
     return s, calls
 
 
+@pytest.mark.linux
 @pytest.mark.parametrize("hold", [-1, 10_001])
 def test_hold_ms_out_of_range_is_refused_before_any_input(xcalls, hold):
     s, calls = xcalls
@@ -191,6 +199,7 @@ def test_hold_ms_out_of_range_is_refused_before_any_input(xcalls, hold):
     assert e.value.code == EXIT_USAGE and calls == []
 
 
+@pytest.mark.linux
 def test_hold_ms_at_the_bounds_is_accepted(xcalls):
     s, calls = xcalls
     xinput.keys(s.id, ["w"], hold_ms=10_000)
@@ -198,6 +207,7 @@ def test_hold_ms_at_the_bounds_is_accepted(xcalls):
     assert ("xdotool", "keyup", "w") in calls and ("xdotool", "key", "w") in calls
 
 
+@pytest.mark.linux
 def test_a_failed_hold_still_releases_the_key(xcalls, monkeypatch):
     s, calls = xcalls
 
@@ -209,6 +219,7 @@ def test_a_failed_hold_still_releases_the_key(xcalls, monkeypatch):
     assert calls[-1] == ("xdotool", "keyup", "w")
 
 
+@pytest.mark.linux
 def test_a_failed_drag_still_releases_the_button(xcalls, monkeypatch):
     s, calls = xcalls
     moves = []
@@ -223,6 +234,7 @@ def test_a_failed_drag_still_releases_the_button(xcalls, monkeypatch):
     assert calls[-1] == ("xdotool", "mouseup", "1")
 
 
+@pytest.mark.linux
 def test_a_failed_release_after_a_failure_keeps_the_first_error(xcalls, monkeypatch):
     s, calls = xcalls
 
@@ -240,6 +252,7 @@ def test_a_failed_release_after_a_failure_keeps_the_first_error(xcalls, monkeypa
         xinput.keys(s.id, ["w"], hold_ms=500)
 
 
+@pytest.mark.linux
 @pytest.mark.parametrize("clicks", [51, -51])
 def test_scroll_over_the_cap_is_refused(xcalls, clicks):
     s, calls = xcalls
@@ -248,6 +261,7 @@ def test_scroll_over_the_cap_is_refused(xcalls, clicks):
     assert e.value.code == EXIT_USAGE and "50" in e.value.message and calls == []
 
 
+@pytest.mark.linux
 def test_scroll_at_the_cap_sends_every_click(xcalls):
     s, calls = xcalls
     assert xinput.scroll(s.id, 5, 5, -50) == {"scrolled": -50}
@@ -267,6 +281,7 @@ def _last_journal(s):
     return e["kind"], e["args"]
 
 
+@pytest.mark.linux
 def test_click_holds_the_button_across_frames(xcalls):
     # FSO's UI samples the button once per frame (engine code/ui/uimouse.cpp:43-58): a press and a
     # release inside one frame leave RELEASED-after-RELEASED and the button never fires. Three
@@ -279,6 +294,7 @@ def test_click_holds_the_button_across_frames(xcalls):
     assert _last_journal(s) == ("click", {"x": 7, "y": 9, "button": 1, "double": False})
 
 
+@pytest.mark.linux
 def test_double_click_fits_fso_double_click_window(xcalls):
     # QA CR-2: FSO counts a double click only if both presses land within 250 ms (sampled per
     # frame); each hold and the gap must still span a frame. One xdotool process runs it all.
@@ -290,6 +306,7 @@ def test_double_click_fits_fso_double_click_window(xcalls):
     assert _last_journal(s)[1]["double"] is True
 
 
+@pytest.mark.linux
 def test_click_interrupted_while_held_releases_the_button(xcalls, monkeypatch):
     s, calls = xcalls
 
@@ -304,6 +321,7 @@ def test_click_interrupted_while_held_releases_the_button(xcalls, monkeypatch):
     assert calls[-1] == ("xdotool", "mouseup", "1")   # a button left down turns clicks into drags
 
 
+@pytest.mark.linux
 def test_negative_coordinates_reach_xdotool_after_the_separator(xcalls):
     # QA CR-4, probed: `xdotool mousemove --window W -40 12` fails with "unrecognized option".
     s, calls = xcalls
@@ -326,6 +344,7 @@ def _geometry_x(calls, geometry="WINDOW=1\nX=12\nY=34\nWIDTH=1280\nHEIGHT=720\nS
     return x
 
 
+@pytest.mark.linux
 def test_full_screenshot_captures_the_root_window_and_the_window_origin(xcalls, monkeypatch):
     # Qt popup menus and qtFRED dialogs are separate top-level windows: a capture of the main
     # window alone shows a black box or nothing. full=True captures the whole display and says
@@ -339,6 +358,7 @@ def test_full_screenshot_captures_the_root_window_and_the_window_origin(xcalls, 
     assert r["window_origin"] == [12, 34] and (r["width"], r["height"]) == (1280, 800)
 
 
+@pytest.mark.linux
 def test_default_screenshot_is_still_the_main_window(xcalls, monkeypatch):
     s, calls = xcalls
     monkeypatch.setattr(xinput, "_x", _geometry_x(calls))
@@ -347,6 +367,7 @@ def test_default_screenshot_is_still_the_main_window(xcalls, monkeypatch):
     assert "window_origin" not in r
 
 
+@pytest.mark.linux
 def test_move_places_the_pointer_and_reads_it_back(xcalls, monkeypatch):
     # Hover without clicking (FSO and Qt highlight on hover; some UI only reacts to a pointer that
     # rests on it). The reply reads the pointer back so the caller knows where it really is.
@@ -358,6 +379,7 @@ def test_move_places_the_pointer_and_reads_it_back(xcalls, monkeypatch):
     assert _last_journal(s) == ("move", {"x": 100, "y": 100})     # replay repeats hovers
 
 
+@pytest.mark.linux
 @pytest.mark.parametrize("out", ["", "X=12\n", "X=abc\nY=3\n", "garbage"])
 def test_unreadable_positions_are_a_clear_error(xcalls, monkeypatch, out):
     # QA TA-6: a malformed reply must be EXIT_NOT_FOUND with a hint, not a bare KeyError.

@@ -19,7 +19,9 @@ Timeouts: each tool's limit is derived from the verb's own internal waits plus a
 server never gives up while fsoctl is still inside a bounded wait. If the limit is reached anyway,
 fsoctl gets SIGTERM first (it turns that into a normal exit so its cleanup can stop sessions it
 started; QA SF-13/SL-9) and SIGKILL only if it has not exited TERM_GRACE_SEC later.
+On Windows the request is Ctrl-Break, which needs a console shared with fsoctl (see _exec).
 """
+import ctypes
 import importlib
 import json
 import os
@@ -46,6 +48,13 @@ DEFAULT_TIMEOUT = 90
 # tests/mcp_check.py checks the sum.
 TERM_GRACE_SEC = 90
 INLINE_IMAGE_MAX_BYTES = 16 * 1024 * 1024
+_WINDOWS = sys.platform == "win32"
+# Windows process-creation flags (WinBase.h) and the console event that asks fsoctl to stop
+# (WinCon.h). Named here because Python's subprocess and signal modules have them on Windows
+# only, and tests/mcp_check.py runs this logic on every OS.
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
+_CTRL_BREAK_EVENT = 1
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 # Loaded by Claude Code at session start for every connected server (truncated at 2,048
@@ -83,23 +92,74 @@ while a controller flies)."""
 mcp = MCPServer("fso-harness", instructions=INSTRUCTIONS)
 
 
+def _has_console() -> bool:
+    """True when this server process has a console, with or without a window (Windows only).
+    GetConsoleCP answers 0 only for a process with no console at all (measured in the VM:
+    437 with a console window and with a windowless console, 0 for a detached process)."""
+    return bool(ctypes.windll.kernel32.GetConsoleCP())
+
+
+def _ask_to_stop(proc: subprocess.Popen, shares_console: bool) -> bool:
+    """Ask a timed-out fsoctl to stop so that its cleanup runs. Returns False when there is
+    no way to ask; the caller then ends it at once instead of waiting out the grace.
+
+    Linux: SIGTERM. Windows: the console event Ctrl-Break, which fsoctl receives as SIGBREAK
+    (cli._stop_signal). It travels through the console the two processes share, so it can
+    be sent only when this server has one and fsoctl was started on it (see _exec).
+    """
+    if not _WINDOWS:
+        proc.terminate()
+        return True
+    if not shares_console:
+        return False
+    try:
+        proc.send_signal(_CTRL_BREAK_EVENT)
+    except OSError:
+        return False
+    return True
+
+
+def _left_within(proc: subprocess.Popen, seconds: float) -> bool:
+    """Wait up to `seconds` for the process to end; True if it did."""
+    try:
+        proc.communicate(timeout=seconds)
+    except subprocess.TimeoutExpired:
+        return False
+    return True
+
+
 def _exec(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
-    """Run one fsoctl command; on timeout send SIGTERM, then SIGKILL (replaced in tests).
+    """Run one fsoctl command; on timeout ask it to stop, then end it (replaced in tests).
 
     Receives the full command and the limit in seconds. Returns the finished process, or raises
     subprocess.TimeoutExpired after the process has been stopped either way.
     WHY not subprocess.run(timeout=...): that sends SIGKILL at once, which skips fsoctl's
     cleanup and leaves a launched engine holding a session slot until its runtime limit.
+
+    On Windows, how fsoctl is started decides whether it can be asked (measured in
+    the VM, 2026-11-16, seven cases for three kinds of parent; results note, "Stopping a
+    timed-out fsoctl"):
+    - this server has a console (Claude Code in a terminal; also a console without a
+      window): fsoctl starts on that console in a process group of its own, and Ctrl-Break
+      to the group reaches it. No window opens: the console already exists.
+    - this server has no console: a console program started from it would open a console
+      WINDOW on the user's desktop, so fsoctl starts with CREATE_NO_WINDOW. It then has a
+      console of its own that Ctrl-Break from here cannot reach, and a timeout ends it at
+      once. Sessions it had started stay until their own limits; `cleanup` and `list` show
+      them (the timeout's hint says so).
     """
+    extra = {}
+    shares_console = False
+    if _WINDOWS:
+        shares_console = _has_console()
+        extra["creationflags"] = _CREATE_NEW_PROCESS_GROUP | (
+            0 if shares_console else _CREATE_NO_WINDOW)
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            cwd=REPO, env=os.environ.copy())
+                            cwd=REPO, env=os.environ.copy(), **extra)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        proc.terminate()
-        try:
-            proc.communicate(timeout=TERM_GRACE_SEC)
-        except subprocess.TimeoutExpired:
+        if not (_ask_to_stop(proc, shares_console) and _left_within(proc, TERM_GRACE_SEC)):
             proc.kill()
             proc.communicate()
         raise
@@ -112,9 +172,12 @@ def _ctl(*args: str, timeout: float = DEFAULT_TIMEOUT) -> str:
     try:
         r = _exec(cmd, timeout)
     except subprocess.TimeoutExpired:
+        how = ("fsoctl was asked to stop (Ctrl-Break) where this server has a console, and "
+               "ended at once where it has none; " if _WINDOWS
+               else "fsoctl was asked to stop (SIGTERM) and then killed if needed; ")
         return json.dumps({"ok": False, "message": f"fsoctl timed out after {timeout:.0f}s",
-                           "hint": "fsoctl was asked to stop (SIGTERM) and then killed if needed; "
-                                   "a session it started may still be running: check `list`"})
+                           "hint": how + "a session it started may still be running: check "
+                                         "`list`"})
     out = r.stdout.strip()
     if out.startswith("{"):
         return out
@@ -154,7 +217,7 @@ PROMPTS = {
 
 def _guide_section(heading: str) -> str:
     """Return the guide's `## heading` section (heading line included) up to the next heading."""
-    text = GUIDE.read_text()
+    text = GUIDE.read_text(encoding="utf-8")
     start = text.index(f"\n## {heading}\n") + 1
     end = text.find("\n## ", start + 1)
     body = text[start:] if end == -1 else text[start:end]
@@ -196,14 +259,19 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
            extra_args: list[str] | None = None, match: str | None = None,
            role: str | None = None, port: int | None = None, connect: str | None = None,
            game_name: str | None = None, closed: bool = False,
-           network: str = "private", sound: bool = False) -> str:
+           network: str | None = None, sound: bool = False, visible: bool = False) -> str:
     """Start a game (or qtFRED) session on a private virtual display; returns its id once ready.
+    On Windows the session runs on a hidden desktop of its own; visible=true (Windows only)
+    puts the game window on the user's desktop instead.
 
     Multiplayer: match_create first, then launch role="standalone" | "host" | "client" with
     match=<id>; each session gets the next free port, clients auto-join `connect` (default the
-    match's server); mission on a host/client starts that mission with no human. Every
-    session runs in its own loopback-only network by default (the engine binds its game port
-    on every interface otherwise); network="real" is the opt-out.
+    match's server); mission on a host/client starts that mission with no human. Sessions use
+    the machine's real network by default, as the stock game does (each gets its own UDP game
+    port); network="private" puts the engine in its own loopback-only network instead;
+    network="sandbox" adds a bwrap sandbox around the engine for untrusted builds (no home, game
+    data read-only, OpenGL only, sound refused). A match session always takes its match's network
+    (chosen at match_create).
 
     pilot: "chooser" | "existing:NAME" (needs pilot_source: a folder holding that pilot's files)
     | "create:NAME". mods: comma-separated mod folders. Startup stages can each be skipped:
@@ -226,7 +294,7 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
             f"--runtime={runtime}", f"--ready-timeout={ready_timeout}",
             *_opt("match", match), *_opt("role", role), *_opt("port", port),
             *_opt("connect", connect), *_opt("game-name", game_name), *_opt("closed", closed),
-            f"--network={network}", *_opt("sound", sound)]
+            *_opt("network", network), *_opt("sound", sound), *_opt("visible", visible)]
     if extra_args:
         args += ["--", *extra_args]
     return _ctl(*args, timeout=ready_timeout + LAUNCH_EXTRA_SEC)
@@ -268,28 +336,30 @@ def version() -> str:
 def cleanup(older_than: float = 600) -> str:
     """Delete run folders of finished sessions older than `older_than` seconds (default 10 min).
 
-    Sessions still starting, running or shutting down are never touched.
+    Sessions still starting, running or shutting down are never touched. Every launch already
+    does this for runs older than a day (crashed ones: a week).
     """
     return _ctl("cleanup", f"--older-than={older_than}")
 
 
 @mcp.tool()
-def match_create(label: str = "") -> str:
-    """Create a private, loopback-only network for one multiplayer game; returns its id. Launch
-    the server and clients into it with launch(match=..., role=...). Nothing in it is reachable
-    from the LAN or the internet. Remove it with match_remove when done."""
-    return _ctl("match", "create", *_opt("label", label or None))
+def match_create(label: str = "", network: str = "real") -> str:
+    """Create a match for one multiplayer game; returns its id. Launch the server and clients
+    into it with launch(match=..., role=...). network="real" (default): the machine's network,
+    as the stock game, each session on its own UDP port; network="private": a loopback-only
+    network nothing on the LAN or the internet can reach. Remove it with match_remove when done."""
+    return _ctl("match", "create", *_opt("label", label or None), f"--network={network}")
 
 
 @mcp.tool()
 def match_list() -> str:
-    """List private multiplayer networks and the sessions in each."""
+    """List multiplayer matches, their networks and the sessions in each."""
     return _ctl("match", "list")
 
 
 @mcp.tool()
 def match_remove(id: str) -> str:
-    """Stop every session in a match, then end its private network."""
+    """Stop every session in a match, then end it (and its network, for a private match)."""
     # Up to three sessions, each stop up to TERM_GRACE_SEC, then the holder (QA XFA-3): the
     # default budget would interrupt the removal halfway and leave members alive.
     return _ctl("match", "remove", id, timeout=3 * TERM_GRACE_SEC + 30)
@@ -471,12 +541,15 @@ def replay(source_id: str, speed: float = 1.0, binary: str | None = None,
 
 @mcp.tool()
 def build(worktree: str, build_dir: str = "build", targets: list[str] | None = None,
-          jobs: int = 14, timeout: float = 3600) -> str:
+          jobs: int = 14, timeout: float = 3600, config: str | None = None) -> str:
     """Build a configured FSO worktree in a capped scope; returns parsed compiler errors (errors
-    first), and the log tail when it fails. A failed build is ok:false with code 9."""
+    first), and the log tail when it fails. A failed build is ok:false with code 9.
+    config: the configuration to build where one build folder holds several (Visual Studio:
+    Debug, Release, FastDebug); leave it out for Ninja and Makefile folders."""
     tgt = [f"--target={t}" for t in targets or []]
     return _ctl("build", f"--build-dir={build_dir}", *tgt, f"--jobs={jobs}",
-                f"--timeout={timeout}", *_pos(worktree), timeout=timeout + 60)
+                f"--timeout={timeout}", *_opt("config", config), *_pos(worktree),
+                timeout=timeout + 60)
 
 
 @mcp.tool()

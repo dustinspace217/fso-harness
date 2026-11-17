@@ -1,0 +1,51 @@
+{
+ "window_found": true,
+ "dialog_controls": [
+  {
+   "AutomationId": "",
+   "ControlType": 50032,
+   "Name": "Error!"
+  },
+  {
+   "AutomationId": "-2",
+   "ControlType": 50006,
+   "Name": ""
+  },
+  {
+   "AutomationId": "",
+   "ControlType": 50020,
+   "Name": "Error: \nWeb cursor bitmap not found.  This is most likely due to one of three reasons:\n    1) You're running FreeSpace Open from somewhere other than your FreeSpace 2 folder;\n    2) You've somehow corrupted your FreeSpace 2 installation, e.g. by modifying or removing the retail VP files;\n    3) You haven't installed FreeSpace 2 at all.  (Note that installing FreeSpace Open does NOT remove the need for a FreeSpace 2 installation.)\nNumber 1 can be fixed by simply moving the FreeSpace Open executable file to the FreeSpace 2 folder.  Numbers 2 and 3 can be fixed by installing or reinstalling FreeSpace 2.\n\nFile: 2d.cpp\nLine: 2042\n"
+  },
+  {
+   "AutomationId": "101",
+   "ControlType": 50000,
+   "Name": "Debug"
+  },
+  {
+   "AutomationId": "100",
+   "ControlType": 50000,
+   "Name": "Exit"
+  },
+  {
+   "AutomationId": "",
+   "ControlType": 50037,
+   "Name": null
+  }
+ ],
+ "automation_id_is_resource_id": false,
+ "notes": [
+  "AutomationId -2 (''): other",
+  "AutomationId 101 ('Debug'): other (resource.h: ID_MY_STATUS_BAR)",
+  "AutomationId 100 ('Exit'): other (resource.h: IDD_ABOUTBOX)"
+ ],
+ "id_buckets": {
+  "fred2": [],
+  "windows": [],
+  "combo_child": [],
+  "other": [
+   -2,
+   101,
+   100
+  ]
+ }
+}

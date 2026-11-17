@@ -153,7 +153,10 @@ def test_clock_reports_engine_and_mission_time(mission):
 
 
 def test_call_after_engine_killed_reports_engine(mission):
-    os.kill(session.load(mission).engine_pid, signal.SIGKILL)
+    # Windows has no SIGKILL; os.kill with any other signal number ends the process at once
+    # there, and its exit code is that number. No signal name can reach the caller then.
+    hard_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    os.kill(session.load(mission).engine_pid, hard_kill)
     for _ in range(20):   # bounded: up to 5 s for the runner to record how the engine ended
         if session.load(mission).exit_info:
             break
@@ -162,5 +165,8 @@ def test_call_after_engine_killed_reports_engine(mission):
     with pytest.raises(HarnessError) as e:
         game.state(mission)
     assert e.value.code == EXIT_ENGINE and "crash_report" in e.value.hint  # Review Focus 2
-    assert "SIGKILL" in e.value.message   # QA finding TA-2: the signal reaches the caller
+    if hasattr(signal, "SIGKILL"):
+        assert "SIGKILL" in e.value.message   # QA finding TA-2: the signal reaches the caller
+    else:
+        assert str(int(signal.SIGTERM)) in e.value.message      # Windows: the exit code does
     assert time.monotonic() - t0 < 5   # an answer, not a timeout

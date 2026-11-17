@@ -153,12 +153,13 @@ def test_log_wait_reads_only_new_bytes(live, monkeypatch):
     log = logs.sources(live)["engine"]
     log.write_bytes(b"x" * 100_000 + b"\n")
     sizes = []
-    real_open = open
+    real_open = game.safefs.open_read
 
-    def spy_open(path, mode="r", *a, **kw):
-        f = real_open(path, mode, *a, **kw)
-        return _ReadSpy(f, sizes) if str(path) == str(log) else f
-    monkeypatch.setattr("builtins.open", spy_open)
+    # The log wait opens logs through safefs (QA 2026-11-13 SA-2), so the spy sits there.
+    def spy_open(run, rel):
+        f = real_open(run, rel)
+        return _ReadSpy(f, sizes) if rel == logs.REL["engine"] else f
+    monkeypatch.setattr(game.safefs, "open_read", spy_open)
     with pytest.raises(HarnessError):
         game.wait_for(live.id, "log", r"never", timeout=0.8)
     assert len(sizes) > 2 and max(sizes) <= 4096   # several polls; never the 100 kB already there

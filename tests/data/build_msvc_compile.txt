@@ -1,0 +1,8 @@
+MSBuild version 17.14.60+43b635718 for .NET Framework
+
+  1>Checking Build System
+  Building Custom Rule C:/xplat/msvc/CMakeLists.txt
+  bad_compile.cpp
+C:\xplat\msvc\bad_compile.cpp(1,26): warning C4100: 'never_read': unreferenced parameter [C:\xplat\msvc\build\bad_compile.vcxproj]
+C:\xplat\msvc\bad_compile.cpp(5,14): error C2065: 'undeclared_name': undeclared identifier [C:\xplat\msvc\build\bad_compile.vcxproj]
+C:\xplat\msvc\bad_compile.cpp(7,1): error C2143: syntax error: missing ';' before '}' [C:\xplat\msvc\build\bad_compile.vcxproj]

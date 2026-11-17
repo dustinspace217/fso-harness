@@ -18,6 +18,7 @@ from fsoctl import channel, cli, launcher, paths, runner, scope, session
 from fsoctl.errors import (EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT, EXIT_USAGE,
                            HarnessError)
 from fsoctl.launcher import LaunchRequest
+from fsoctl.platform import linux_procs
 
 
 def _mk(**kw):
@@ -169,6 +170,92 @@ def _mkdir(p: Path) -> Path:
     return p
 
 
+# ---- automatic cleanup at launch (2026-11-14: /run/user filled with 929 finished runs) ---------
+
+_DAY = 86400.0
+
+
+def _aged(days: float, **kw) -> session.Session:
+    """A session record created `days` ago, with any record fields given (status, ended_by...)."""
+    s = _mk(status=kw.pop("status", None))
+    s.created = time.time() - days * _DAY
+    for k, v in kw.items():
+        setattr(s, k, v)
+    session.save(s)
+    return s
+
+
+def _clean_exit(days: float) -> session.Session:
+    return _aged(days, status="exited", ended_by="exit", exit_info={"returncode": 0, "at": 1.0})
+
+
+def _segv(days: float) -> session.Session:
+    return _aged(days, status="exited", ended_by="exit",
+                 exit_info={"returncode": -11, "signal": "SIGSEGV", "at": 1.0})
+
+
+def _ready_launch(monkeypatch) -> dict:
+    """Launch with the bridge heartbeat and renderer read stubbed; return launch()'s result."""
+    hb = {"state": "GS_STATE_MAIN_MENU", "errors": 0, "last_error": None, "switches": {}}
+    monkeypatch.setattr(channel.Channel, "wait_ready", lambda self, timeout, alive: hb)
+    monkeypatch.setattr(launcher.procs, "loaded_libraries", lambda pid: "")
+    return launcher.launch(LaunchRequest(binary="/bin/true"))
+
+
+def test_launch_deletes_runs_that_ended_cleanly_over_a_day_ago(tmp_runtime, fs2, scopes,
+                                                               monkeypatch):
+    old_stop, old_exit = _aged(2, status="stopped", ended_by="stop"), _clean_exit(2)
+    young = _aged(0.5, status="stopped", ended_by="stop")
+    live = _aged(2, status="running")
+    scopes.states[live.scope] = "active"
+    r = _ready_launch(monkeypatch)
+    left = {s.id for s in session.list_sessions()}
+    assert old_stop.id not in left and old_exit.id not in left
+    assert not session.run_dir(old_stop).exists() and not session.run_dir(old_exit).exists()
+    assert {young.id, live.id, r["id"]} <= left
+    assert session.run_dir(live).is_dir() and session.run_dir(session.load(r["id"])).is_dir()
+
+
+@pytest.mark.parametrize("make", [
+    _segv,
+    lambda d: _aged(d, status="exited", ended_by="runtime_limit"),
+    lambda d: _aged(d, status="exited", ended_by="oom"),
+    lambda d: _aged(d, status="failed"),
+    lambda d: _aged(d, status="running"),      # its scope vanished before the end was written
+], ids=["signal", "runtime_limit", "oom", "failed", "vanished"])
+def test_launch_keeps_a_crashed_run_for_a_week_then_deletes_it(tmp_runtime, fs2, scopes,
+                                                               monkeypatch, make):
+    recent, ancient = make(3), make(8)
+    _ready_launch(monkeypatch)
+    left = {s.id for s in session.list_sessions()}
+    assert recent.id in left and session.run_dir(recent).is_dir()
+    assert ancient.id not in left
+
+
+def test_manual_cleanup_keeps_no_crashed_run_longer(tmp_runtime, scopes):
+    # The week applies to the automatic run only; `cleanup` keeps its one age for every run.
+    crashed = _segv(2)
+    assert launcher.cleanup(_DAY)["removed"] == [crashed.id]
+
+
+def test_automatic_cleanup_failure_never_fails_the_launch(tmp_runtime, fs2, scopes, monkeypatch,
+                                                          capsys):
+    def broken(*a):
+        raise OSError("disk on fire")
+    monkeypatch.setattr(launcher, "_cleanup_locked", broken)
+    r = _ready_launch(monkeypatch)
+    assert session.load(r["id"]).status == "starting"
+    assert "automatic cleanup failed: disk on fire" in capsys.readouterr().err
+
+
+def test_automatic_cleanup_reports_a_folder_it_could_not_remove(tmp_runtime, fs2, scopes,
+                                                                monkeypatch, capsys):
+    monkeypatch.setattr(launcher, "_cleanup_locked", lambda *a: {
+        "removed": [], "removed_folders": [], "failed": [{"path": "/x/y", "error": "busy"}]})
+    _ready_launch(monkeypatch)
+    assert "could not remove /x/y: busy" in capsys.readouterr().err
+
+
 # ---- stop (QA SL-2 / CR-4, TA-3, SL-7) --------------------------------------------------------
 
 def test_stop_twice_keeps_an_exited_session_and_its_exit_info(tmp_runtime, scopes):
@@ -232,7 +319,7 @@ def test_launch_reports_refresh_bridge_errors_and_unknown_renderer(tmp_runtime, 
     hb = {"state": "GS_STATE_MAIN_MENU", "errors": 1, "last_error": "x",
           "switches": {"skip_movies": "done"}}
     monkeypatch.setattr(channel.Channel, "wait_ready", lambda self, timeout, alive: hb)
-    monkeypatch.setattr(launcher.renderer, "read_maps", lambda pid: "")
+    monkeypatch.setattr(launcher.procs, "loaded_libraries", lambda pid: "")
     r = launcher.launch(LaunchRequest(binary="/bin/true"))
     assert r["bridge_refreshed"] is True       # first install into an empty FS2PATH
     assert r["errors"] == 1 and r["last_error"] == "x"
@@ -259,7 +346,7 @@ def test_existing_pilot_needs_a_source(tmp_runtime, fs2):
     assert session.list_sessions() == []
 
 
-def test_copy_pilot_copies_only_that_pilots_files(tmp_path):
+def test_copy_pilot_copies_only_that_pilots_files(tmp_runtime, tmp_path):
     src, prefs = tmp_path / "players", tmp_path / "prefs"
     src.mkdir()
     for n in ("Alpha.json", "Alpha.Main.csg", "Alpha.txt", "Beta.json"):
@@ -529,7 +616,7 @@ def test_stop_ends_the_runner_before_stopping_the_scope(tmp_runtime, scopes, mon
         def in_scope(pid, unit):
             asked.append(unit)
             return pid == proc.pid and proc.poll() is None
-        monkeypatch.setattr(launcher, "_in_scope", in_scope)
+        monkeypatch.setattr(launcher.procs, "in_group", in_scope)
         seen = []
 
         def stop(unit, timeout=20):
@@ -571,7 +658,7 @@ def test_stop_waits_a_bounded_time_for_a_runner_that_ignores_sigterm(tmp_runtime
         s = _mk(status="running")
         _set_runner(s, proc.pid)
         scopes.states[s.scope] = "active"
-        monkeypatch.setattr(launcher, "_in_scope", lambda pid, unit: True)
+        monkeypatch.setattr(launcher.procs, "in_group", lambda pid, unit: True)
         monkeypatch.setattr(launcher, "_RUNNER_EXIT_WAIT", 0.3)
         t0 = time.monotonic()
         r = launcher.stop(s.id)
@@ -590,7 +677,7 @@ def test_stop_waits_a_bounded_time_for_a_runner_that_ignores_sigterm(tmp_runtime
     ("0::/user.slice/user-1000.slice/session-2.scope\n", False),
 ])
 def test_cgroup_scope_match_is_exact(text, expected):
-    assert launcher._cgroup_has_scope(text, "fso-harness-sab12") is expected
+    assert linux_procs._cgroup_has_scope(text, "fso-harness-sab12") is expected
 
 
 
@@ -599,7 +686,7 @@ def test_stop_survives_a_runner_it_may_not_signal(tmp_runtime, scopes, monkeypat
     s = _mk(status="running")
     _set_runner(s, 4242)
     scopes.states[s.scope] = "active"
-    monkeypatch.setattr(launcher, "_in_scope", lambda pid, unit: True)
+    monkeypatch.setattr(launcher.procs, "in_group", lambda pid, unit: True)
 
     def deny(pid, sig):
         raise PermissionError(1, "Operation not permitted")
@@ -618,17 +705,17 @@ def test_gone_reads_the_state_after_the_last_paren(tmp_path, monkeypatch, stat_t
     proc_dir = tmp_path / "123"
     proc_dir.mkdir()
     (proc_dir / "stat").write_text(stat_text)
-    real_path = launcher.Path
-    monkeypatch.setattr(launcher, "Path",
+    real_path = linux_procs.Path
+    monkeypatch.setattr(linux_procs, "Path",
                         lambda p: real_path(str(p).replace("/proc", str(tmp_path), 1)))
-    assert launcher._gone(123) is gone
+    assert launcher.procs.gone(123) is gone
 
 
 def test_gone_and_in_scope_on_a_pid_that_does_not_exist():
     # QA MU-2/MU-4: a missing pid is gone, and never "in scope" (it must not be signalled).
     missing = 2 ** 22 + 7          # above the kernel's pid_max ceiling (4194304)
-    assert launcher._gone(missing) is True
-    assert launcher._in_scope(missing, "fso-harness-sab12") is False
+    assert launcher.procs.gone(missing) is True
+    assert launcher.procs.in_group(missing, "fso-harness-sab12") is False
 
 
 def test_in_scope_matches_this_process_in_its_own_scope():
@@ -636,7 +723,7 @@ def test_in_scope_matches_this_process_in_its_own_scope():
     last = Path("/proc/self/cgroup").read_text().splitlines()[-1].rsplit("/", 1)[-1]
     if not last.endswith(".scope"):
         pytest.skip(f"this test is not running inside a scope ({last})")
-    assert launcher._in_scope(os.getpid(), last.removesuffix(".scope")) is True
+    assert launcher.procs.in_group(os.getpid(), last.removesuffix(".scope")) is True
 
 
 def test_stop_timings_cover_the_runner_and_the_runtime_backstop():
@@ -653,8 +740,8 @@ def test_stop_stops_waiting_when_the_pid_leaves_the_scope(tmp_runtime, scopes, m
     _set_runner(s, 4242)
     scopes.states[s.scope] = "active"
     answers = iter([True])           # in scope when checked before the signal, then not
-    monkeypatch.setattr(launcher, "_in_scope", lambda pid, unit: next(answers, False))
-    monkeypatch.setattr(launcher, "_gone", lambda pid: False)     # the pid is alive (reused)
+    monkeypatch.setattr(launcher.procs, "in_group", lambda pid, unit: next(answers, False))
+    monkeypatch.setattr(launcher.procs, "gone", lambda pid: False)     # the pid is alive (reused)
     monkeypatch.setattr(launcher.os, "kill", lambda pid, sig: None)
     monkeypatch.setattr(launcher, "_RUNNER_EXIT_WAIT", 0.5)
     assert launcher.stop(s.id)["runner_first"] == "ok"
