@@ -386,10 +386,18 @@ posted events from START_GAME. One caveat: a state entered and left inside a pop
   `GET /api/1/mission` `"time": 0.0` for 30 s while a mission was running with a player in it:
   on Linux these copies (`webapi_netgameInfo`, `webui_missiontime`, stand_gui-unix.cpp:365,
   :790) do not seem to be refreshed in a standalone game. Candidate upstream finding for the
-  multiplayer list; not pursued here. `GET /` gives 500 with no `+webui_root`. Every harness
-  standalone now gets `+webui_root <run folder>/webui`, an empty 0700 folder (QA SA-1,
-  2026-10-17, measured inside a private match): `/` then gives an empty listing, `/api/1/auth`
-  401 without and 200 with the login, and paths outside the folder give 404.
+  multiplayer list; not pursued here. `GET /` gives 500 (no `+webui_root`), which was misread
+  as "nothing is served": CORRECTED 2026-10-17 (QA SA-1, measured inside a private match). With
+  no `+webui_root` the engine passes an EMPTY document root (multi_options.h:89) and mongoose
+  builds each file path as root + URL (mongoose.c:1740, defaults only replace NULL options,
+  :5101), so `GET /etc/hostname` returned 200 and `GET /etc/` a 40 KB listing with no login;
+  `/` fails only because the path becomes "" (`opendir("")`). Basic auth guards only `/api/1/...`
+  (stand_gui-unix.cpp:595-628); directory listing is on (mongoose.c:463) and CGI is compiled in.
+  Every harness standalone now gets `+webui_root <run folder>/webui`, an empty 0700 folder: then
+  `/etc/hostname`, `/etc/`, `/../../etc/hostname` and `/%2e%2e/%2e%2e/etc/hostname` all give 404,
+  `/` gives an empty listing, `/api/1/auth` 401 without and 200 with the login. A stock FSO
+  standalone on Linux or macOS with no `+webui_root` serves the disk to whoever reaches its port.
+  Sent upstream with a fix on 2026-11-17 as pull request 8069 of scp-fs2open/fs2open.github.com.
 - The spike script's `kill $SRV` killed a subshell, not the nsenter'd standalone inside it;
   three servers from the spikes kept running for ~30 min inside their dead holders' namespaces
   (containment held: nothing on the real network). Fixed with `exec`; the harness itself stops

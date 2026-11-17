@@ -309,8 +309,10 @@ Recommendation: (a). Record the decision in this plan's Status block before Task
   committed locally, nothing pushed, and the checks ran together on the Task 3 code. Effect: none
   on behaviour; Task 2 has no separately-recorded live check.
 - **Task 3 live check path (other).** The plan says `curl ... http://127.0.0.1:<web_port>/`; the
-  check used `/api/1/auth`, a resource that asks for the login; `/` cannot tell a good login
-  from admin/admin. Effect: the check measures what the plan meant.
+  check used `/api/1/auth`. The engine's basic auth guards only the `/api/1/...` resources
+  (stand_gui-unix.cpp:567-628); `/` is served unguarded (and, QA SA-1, with no `+webui_root` the
+  "document root" is the filesystem root, fixed in the QA fix wave), so it cannot tell a good
+  login from admin/admin. Effect: the check measures what the plan meant.
 - **MCP `match_create(network=...)` (scope-change, small).** Task 2's file list does not name
   mcp/server.py. Without the parameter, private matches would be unreachable from MCP, which the
   global constraint "nothing that works on Linux today is removed" forbids. Effect: MCP callers
@@ -334,8 +336,8 @@ Recommendation: (a). Record the decision in this plan's Status block before Task
 
 ### Changes the QA review made (Phase 1, 2026-10-17; behavioural unless noted)
 - Every standalone gets `+webui_root` = an empty 0700 folder in its run folder (QA SA-1). Not in
-  the plan; added by the QA review.
-  A runtime path whose folders end in .cgi/.pl/.php, or whose root line would not
+  the plan; without it the panel served the filesystem to the LAN once Task 2 made real matches
+  the default. A runtime path whose folders end in .cgi/.pl/.php, or whose root line would not
   fit the engine's 512-byte config line, is refused (XFA-1, XFA-2).
 - Host ports are test-bound before they are handed out (port_free), and readiness and
   `web_panel` count only a socket owned by the session's engine pid (engine_holds). A real-network

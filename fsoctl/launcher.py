@@ -343,7 +343,7 @@ def web_panel(sess: session.Session) -> dict | None:
 
 
 _CFG_LINE_MAX = 511          # the engine reads multi.cfg lines into a 512-byte buffer
-_CGI_SUFFIXES = (".cgi", ".pl", ".php")   # names the engine's web server treats as scripts
+_CGI_SUFFIXES = (".cgi", ".pl", ".php")   # mongoose's default cgi_pattern (mongoose.c)
 
 
 def _check_web_root(web_root: str | None) -> None:
@@ -353,9 +353,10 @@ def _check_web_root(web_root: str | None) -> None:
     - Its `+webui_root` line must fit the engine's 512-byte line buffer (multi_options.cpp
       cfgets(str, 512)): a longer one is cut, and a cut can land on the session's run folder,
       whose session.json holds the login (plan A QA XFA-2).
-    - No folder on its path may end in .cgi, .pl or .php: the engine's web server gives such
-      names a meaning of their own, so a root under one would not be used as given (plan A QA
-      XFA-1).
+    - No folder on its path may end in .cgi, .pl or .php: when a URL names no file, mongoose
+      walks back over the WHOLE path, the root included, looking for a CGI script
+      (convert_uri_to_file_name), so such a folder above the root would be served or run with
+      no login (plan A QA XFA-1).
     """
     if not web_root or "\n" in web_root or "\r" in web_root:
         raise HarnessError(EXIT_LAUNCH, "a web panel needs a one-line document root",
@@ -378,8 +379,11 @@ def multi_cfg_text(game_name: str, port: int | None, user: str | None,
     (multi_options.cpp: std_configLoaded runs when Is_standalone), so other roles get no web
     lines. Raises EXIT_LAUNCH for a panel without a root, or a root holding a newline.
 
-    The root is required (QA SA-1, 2026-10-17, in that review's record): an empty folder as
-    the root leaves nothing to serve, run or list.
+    WHY the root is required (QA SA-1, measured 2026-10-17): with no +webui_root the engine hands
+    mongoose an EMPTY document root (multi_options.h webuiRootDirectory = ""), and mongoose builds
+    each file path as root + URL (mongoose.c convert_uri_to_file_name), so GET /etc/ listed the
+    real /etc with no login: the login guards only /api/1/... (stand_gui-unix.cpp). An empty
+    folder as the root leaves nothing to serve, run or list.
     """
     text = f"+name {game_name}\n"
     if port is not None:

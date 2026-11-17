@@ -148,7 +148,9 @@ def test_web_password_not_in_audit_or_journal(tmp_runtime, monkeypatch):
 
 
 def test_standalone_web_root_is_an_empty_folder_of_its_own(tmp_runtime, monkeypatch):
-    # QA SA-1: every standalone gets an empty folder in its run folder as its web root.
+    # QA SA-1: with no +webui_root the engine passes an EMPTY document root to mongoose, which
+    # then maps every URL straight onto the filesystem (/etc/, the home folder) with no login
+    # (only /api/1/... is checked). Every standalone gets an empty folder in its run folder.
     _fs2(tmp_runtime, monkeypatch)
     _alive(monkeypatch)
     srv = _standalone()

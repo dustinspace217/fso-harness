@@ -87,8 +87,8 @@ def test_standalone_listens_only_inside_the_match(engine_env, live_match):
         # because a standalone has no pilot, and the client test below checks its own
         assert not list(prefs.rglob("players/*.json"))
         # The web panel (plan A QA SA-1, TA-11), asked from inside the match: never the engine's
-        # admin/admin, its own login works, and its web folder is an empty one of its own, so
-        # nothing outside that folder is served.
+        # admin/admin, its own login works, and its document root is an empty folder, so the
+        # filesystem is not served (with no +webui_root the engine served /etc/ with no login).
         panel = r["web_panel"]
         assert panel and panel["port"] == 8080
         mine = f"{panel['user']}:{panel['password']}"

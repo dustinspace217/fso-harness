@@ -435,9 +435,10 @@ address. Acceptable for a local test harness, not a sandbox.
 Limits of this version: one server (standalone or host) and one mission-carrying session per
 match; a host launched with `--mission` starts its mission at once, so a client cannot join it
 (a client cannot enter a mission in progress), which is why the recipe uses a standalone and gives
-the mission to the first client; the standalone's web panel (basic auth) never runs with the
-engine's `admin`/`admin` default, and each standalone gets an empty web folder of its own
-(`+webui_root`): every standalone gets a random login
+the mission to the first client; the standalone's web panel (basic auth on its `/api/1/...`
+paths) never runs with the engine's `admin`/`admin` default or its empty document root (with no
+`+webui_root` the engine serves the whole filesystem unguarded; each standalone gets an empty
+folder of its own instead): every standalone gets a random login
 (`fsoh-` plus 6 hex digits, a 24-character password) and, in a real match, a TCP port no other
 live real-network standalone holds and a test bind accepts (8080 up; 8080 inside a private
 match's namespace), all in the launch result and `status` under `web_panel` (only while the

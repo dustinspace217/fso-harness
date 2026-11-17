@@ -102,10 +102,9 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
   a random login (launcher.web_login) and, on the real network, a TCP port unique among live
   real-network standalones (launcher.web_port), written into its multi.cfg; reported in launch
   and status as `web_panel`, never in an audit log. Only the standalone starts the panel on
-  Linux (multi_options.cpp, Is_standalone). Every standalone also gets `+webui_root` = an
-  empty 0700 folder in its run folder, and `launcher._check_web_root` refuses a root the
-  engine would not use exactly as given. Never drop either (QA SA-1 2026-10-17, in that
-  review's record).
+  Linux (multi_options.cpp, Is_standalone); the login guards only the `/api/1/...` paths, so
+  every standalone also gets `+webui_root` = an empty 0700 folder in its run folder: with no root
+  the engine serves the whole filesystem with no login (QA SA-1 2026-10-17, probe-results 21).
 - **`--sound` never reaches the speakers or the mic** (fsoctl/sound.py, README "Sound"): a
   per-session null sink `fsoh_<root tag>_<id>`, named as FSO's PlaybackDevice AND CaptureDevice
   (its monitor) in the session prefs, because FSO opens OpenAL devices BY NAME and falls back to
