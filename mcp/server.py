@@ -259,7 +259,8 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
            extra_args: list[str] | None = None, match: str | None = None,
            role: str | None = None, port: int | None = None, connect: str | None = None,
            game_name: str | None = None, closed: bool = False,
-           network: str | None = None, sound: bool = False, visible: bool = False) -> str:
+           network: str | None = None, sound: bool = False, visible: bool = False,
+           display: str | None = None) -> str:
     """Start a game (or qtFRED) session on a private virtual display; returns its id once ready.
     On Windows the session runs on a hidden desktop of its own; visible=true (Windows only)
     puts the game window on the user's desktop instead.
@@ -280,7 +281,9 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
     engine Error() then waits on a dialog instead of ending the session). runtime is the hard
     limit in seconds after which the session is killed (default 30 min). sound=true plays the
     game's audio into its own null sink (never the speakers; the result's sound.sink names it,
-    record <sink>.monitor); default -nosound. For qtFRED, open
+    record <sink>.monitor); default -nosound. display (Linux): "weston" draws on the GPU,
+    "xvfb" in software (identical pixels for compare); default picks weston when it can run and
+    says why in warnings when it cannot. For qtFRED, open
     missions with fred_open (it works on a copy); launch refuses a qtFRED mission outside the
     harness's copy folder.
     """
@@ -294,7 +297,8 @@ def launch(mods: str = "", mission: str | None = None, vulkan: bool = False,
             f"--runtime={runtime}", f"--ready-timeout={ready_timeout}",
             *_opt("match", match), *_opt("role", role), *_opt("port", port),
             *_opt("connect", connect), *_opt("game-name", game_name), *_opt("closed", closed),
-            *_opt("network", network), *_opt("sound", sound), *_opt("visible", visible)]
+            *_opt("network", network), *_opt("sound", sound), *_opt("visible", visible),
+            *_opt("display", display)]
     if extra_args:
         args += ["--", *extra_args]
     return _ctl(*args, timeout=ready_timeout + LAUNCH_EXTRA_SEC)

@@ -1,8 +1,10 @@
 """Which renderer actually came up, judged from the libraries the engine process mapped.
 
 WHY maps and not the log: release builds write no log, and asking for -vulkan is not proof that
-Vulkan came up, so the reliable evidence is what the process loaded. The harness forces software GL
-for OpenGL runs, which goes through Mesa (libgallium / libGLX_mesa); a Vulkan run maps a Vulkan
+Vulkan came up, so the reliable evidence is what the process loaded. An OpenGL run on Xvfb is
+software GL through Mesa (libgallium / libGLX_mesa); on Weston it is the GPU's OpenGL (NVIDIA:
+libGLX_nvidia, checked 2026-11-20; Mesa hardware drivers also map libgallium); a Vulkan run
+maps a Vulkan
 driver (NVIDIA: libnvidia-glvkspirv; Mesa: libvulkan_<driver>) and no Mesa GL (both checked against
 real engine runs on 2026-10-12 for NVIDIA and Mesa GL; Mesa Vulkan names from /usr/lib64).
 
@@ -17,6 +19,9 @@ import re
 
 _VK = re.compile(r"(libnvidia-glvkspirv\.so|libvulkan_[a-z0-9_]+\.so)")
 _GL = re.compile(r"(libgallium[-0-9.]*\.so|libGLX_mesa\.so)")
+# NVIDIA's own OpenGL (a session on Weston). A Vulkan run on NVIDIA maps libGLX_nvidia too
+# (tests/test_renderer.py VK_MAPS), so this decides only after the Vulkan check.
+_NV_GL = re.compile(r"(libGLX_nvidia\.so)")
 _ANY = re.compile(r"(libgallium[-0-9.]*\.so|libGLX_[a-z]+\.so|libnvidia-gl[a-z]+\.so|"
                   r"libvulkan_[a-z0-9_]+\.so|libvulkan\.so)")
 # Windows module names (file names are case-insensitive there).
@@ -43,7 +48,7 @@ def classify(maps_text: str) -> dict:
         kind = "opengl"
     elif has_vk:
         kind = "vulkan"
-    elif _WIN_VENDOR_GL.search(maps_text):
+    elif _WIN_VENDOR_GL.search(maps_text) or _NV_GL.search(maps_text):
         kind = "opengl"
     else:
         kind = "unknown"

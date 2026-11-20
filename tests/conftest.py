@@ -12,6 +12,11 @@ no_host_ports (autouse): launcher.port_free answers "free" without binding anyth
 not wait for a game port no engine can own), so the unit
 tier never opens a socket on the host and parallel workers cannot race for one; tests of the
 test bind itself mark themselves "host_ports". Real-engine tiers keep the real test bind.
+hermetic_display (autouse): the display choice's host probes answer "no weston, no GPU, no
+nvidia-smi, no glxinfo" without looking at the machine (QA TA-3: launch tests ran the real
+which/glob/nvidia-smi, runner tests ran the real glxinfo against fake displays, so results and
+timing depended on the host). Tests that want Weston stub the probes themselves; tests of the
+probes call the real functions captured at import (tests/test_display.py). Real tiers keep them.
 engine_env: engine-tier tests run only when the real game folder and engine binary are configured.
 
 Which tests run on which OS (cross-platform Plan B): the unit tier grew up on Linux, and part
@@ -29,12 +34,14 @@ from pathlib import Path
 
 import pytest
 
-from fsoctl import launcher, platform, scope, sound
+from fsoctl import display, launcher, platform, scope, sound
 from fsoctl.errors import EXIT_LAUNCH
 
 # Test file -> what it tests that only Linux has (so far). Not collected on other systems:
 # several cannot even be imported there (fcntl, resource, os.O_DIRECTORY).
 LINUX_ONLY_FILES = {
+    "test_display.py": "the Linux display choice and the runner's Weston start (Weston, Xwayland)",
+    "test_weston_plumbing.py": "the Linux display choice through launcher and runner (signals)",
     "test_b_bridge_install.py": "holds the bridge lock with fcntl, standing in for another process",
     "test_b_crash.py": "the Linux crash report (coredumpctl and gdb)",
     "test_b_launcher.py": "holds the launch lock with fcntl; the systemd launch path",
@@ -160,6 +167,17 @@ def no_host_ports(monkeypatch, request):
     monkeypatch.setattr(launcher, "port_free", lambda proto, port: True)
     # Launch tests run no engine, so nothing can own the game port: do not wait for it.
     monkeypatch.setattr(launcher, "_GAME_PORT_WAIT", 0.0)
+
+
+@pytest.fixture(autouse=True)
+def hermetic_display(monkeypatch, request):
+    """See the module docstring: the display probes are stubs unless this is a real tier."""
+    if any(request.node.get_closest_marker(m) for m in ("engine", "qtfred", "vulkan", "sound")):
+        return
+    monkeypatch.setattr(display, "_has_program", lambda name: False)
+    monkeypatch.setattr(display, "_has_render_node", lambda: False)
+    monkeypatch.setattr(display, "_free_video_memory_mib", lambda: None)
+    monkeypatch.setattr(display, "gl_renderer", lambda x_display, engine_env: None)
 
 
 @pytest.fixture

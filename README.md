@@ -21,7 +21,8 @@ does not yet). License: [Unlicense](LICENSE), matching FSO's newer code.
 agent (MCP client)  or  you (shell)
    -> mcp/server.py (thin, stateless)  ->  fsoctl --json <verb>
         -> per session: a systemd --user scope "fso-harness-<id>" holding
-             Xvfb (its own display) + the engine or qtFRED (private preferences folder)
+             a virtual display (Weston on the GPU, or Xvfb) + the engine or qtFRED
+             (private preferences folder)
         -> run folder $XDG_RUNTIME_DIR/fso-harness/<id>/ : session.json, logs, shots, journal
    <- bridge mod "fso_harness_bridge" (Lua, first in -mod) inside the engine, answering commands
 ```
@@ -52,9 +53,38 @@ agent (MCP client)  or  you (shell)
 - Linux with a systemd user session, Python 3.12+
 - `Xvfb`, `xdotool`, ImageMagick (`import`, `identify`, `magick compare`), `tesseract`,
   `gdb` + `coredumpctl` (crash reports), `cmake` (builds)
+- For GPU rendering (recommended): `weston` and `Xwayland` (Fedora: `sudo dnf install weston
+  xorg-x11-server-Xwayland`), a GPU with a render node (`/dev/dri/renderD*`), and `glxinfo`
+  (glx-utils) for the renderer report. Without them sessions run on Xvfb in software. See
+  [Display](#display).
 - An FSO build. For Vulkan: built with `-DFSO_BUILD_WITH_VULKAN=ON` (needs `libshaderc-devel`) and
   a GPU Vulkan driver; point `VK_ICD_FILENAMES` at its ICD file (the harness never picks one).
 - qtFRED for the editor tools. A debug engine build (`FSO_BIN_DEBUG`) for full validation and logs.
+
+## Display
+
+Every Linux session draws into a virtual display of its own, never your desktop. Two kinds:
+
+- **Weston** (the default when it can run): a headless Weston compositor on your GPU with a
+  full-screen Xwayland inside it. The game uses the GPU's own OpenGL, about 60 frames a second
+  (measured: retail SM1-01, 16.7 ms a frame). Each session uses video memory shared with your
+  desktop (about 300 MiB for retail missions, more for heavy mods), so before choosing Weston the
+  launcher checks free video memory (NVIDIA, through `nvidia-smi`) and uses Xvfb below 3 GB,
+  plus 1 GB for each GPU session already running (its textures may still be loading).
+- **Xvfb**: software OpenGL (Mesa llvmpipe). Slow (often under 30 frames a second, single digits
+  for debug builds), but identical pixels on every machine, which `compare` and screenshot diffs
+  want. Used when Weston, Xwayland or a GPU render node is missing, for the sandbox network (no
+  GPU in the sandbox), and when you ask for it.
+
+Weston gives a session your GPU: a build or mod you do not trust belongs in `--network sandbox`
+(always Xvfb) or under `--display xvfb`, so a runaway shader cannot take the desktop's GPU with it.
+`compare` and `renderer_compare` run on Xvfb unless their launch fields say otherwise. A Vulkan session
+draws on the GPU on either display, so a Vulkan launch short of video memory is refused.
+
+`launch --display auto|weston|xvfb` (MCP: `display`) picks one; `auto` is the default. When `auto`
+falls back to Xvfb, the launch result's `warnings` say why. An explicit `--display weston` that
+cannot run is refused. The launch result carries `display_server` and `gl_renderer` (the OpenGL
+renderer string the display gives, e.g. your GPU's name, or `llvmpipe` for software).
 
 ## Setup
 
@@ -480,7 +510,7 @@ What the engine actually does under the harness, with sources, is recorded in
 
 ```
 pytest                                            # unit tier, no engine
-bounded-run pytest -m engine -p no:xdist          # real engine on Xvfb (needs FS2PATH, FSO_BIN)
+bounded-run pytest -m engine -p no:xdist          # real engine (needs FS2PATH, FSO_BIN)
 bounded-run pytest -m qtfred -p no:xdist          # real qtFRED (QTFRED_BIN)
 bounded-run pytest -m vulkan -p no:xdist          # needs VK_ICD_FILENAMES and a GPU
 ```

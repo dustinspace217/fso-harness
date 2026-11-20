@@ -238,6 +238,9 @@ def test_xvfb_is_terminated_with_sigterm_blocked(tmp_runtime, sigmask, monkeypat
 
         def terminate(self):
             seen.append(_sigterm_blocked())
+
+        def wait(self, timeout=None):
+            return 0
     monkeypatch.setattr(runner, "_start_xvfb", lambda w, h: (":9", Xvfb()))
     monkeypatch.setattr(runner, "_run_engine", lambda sid, env, started: 0)
     assert runner.main(s.id) == 0

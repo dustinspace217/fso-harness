@@ -14,6 +14,17 @@ def test_qtfred_main_window_skips_splash_and_dialogs(monkeypatch):
     assert xwin.main_window(":1", 5, "qtfred", "/x/SM1-01.fs2") is None   # still loading
 
 
+def test_qtfred_main_window_found_with_unsaved_changes(monkeypatch):
+    wins = [("1", "qtFRED"), ("3", "SM1-01.fs2*")]
+    monkeypatch.setattr(xwin, "windows", lambda display, pid: wins)
+    assert xwin.main_window(":1", 5, "qtfred", "/x/SM1-01.fs2") == "3"
+    monkeypatch.setattr(xwin, "windows", lambda display, pid: [("4", "Untitled*")])
+    assert xwin.main_window(":1", 5, "qtfred", None) == "4"
+    monkeypatch.setattr(xwin, "windows", lambda display, pid: [("5", "SM1-01.fs2.bak")])
+    # only the trailing "*" is tolerated
+    assert xwin.main_window(":1", 5, "qtfred", "/x/SM1-01.fs2") is None
+
+
 def test_game_main_window_is_its_only_window(monkeypatch):
     monkeypatch.setattr(xwin, "windows", lambda display, pid: [("9", "FreeSpace 2 Open")])
     assert xwin.main_window(":1", 5, "game", None) == "9"

@@ -19,7 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import (bridge_install, channel, match, paths, platform, renderer, sandbox,
+from . import (bridge_install, channel, display, match, paths, platform, renderer, sandbox,
                session, sound, xwin)
 from .cli import register
 from .errors import (EXIT_ENGINE, EXIT_LAUNCH, EXIT_NOT_FOUND, EXIT_REFUSED, EXIT_TIMEOUT,
@@ -69,6 +69,8 @@ class LaunchRequest:
     mission: str | None = None
     mods: list[str] = field(default_factory=list)
     renderer: str = "opengl"
+    # "auto" | "xvfb" | "weston" (fsoctl.display): auto takes Weston on the GPU when it can run.
+    display: str = "auto"
     width: int = 1280
     height: int = 720
     skip_movies: bool = False
@@ -953,6 +955,9 @@ def _refuse_unavailable(req: LaunchRequest) -> None:
         platform.needs_linux("a match session", "Plan E")
     if req.network in ("private", "sandbox"):
         platform.needs_linux(f"--network {req.network}", "Plan E")
+    if req.display != "auto":
+        platform.needs_linux(f"--display {req.display}",
+                             "the Linux display options (Windows sessions run on desktops)")
 
 
 def _check_run_folder() -> None:
@@ -1046,6 +1051,30 @@ def _web_fields(req: LaunchRequest) -> dict:
     return {"web_port": port, "web_user": user, "web_password": password}
 
 
+def _display_for(req: LaunchRequest) -> tuple[str | None, str | None]:
+    """Return (display server, note) for the session: fsoctl.display's choice on Linux; (None,
+    None) for a standalone server (no window) and on Windows (sessions run on desktops there).
+    Refuses an explicit --display for a standalone, which has no display to choose (QA CR-8)."""
+    if platform.NAME != "linux":
+        return None, None
+    if req.role == "standalone":
+        if req.display != "auto":
+            raise HarnessError(EXIT_USAGE, "a standalone server has no display",
+                               "drop --display")
+        return None, None
+    return display.choose(req.display, resolve_network(req), req.renderer,
+                          _live_gpu_sessions())
+
+
+def _live_gpu_sessions() -> int:
+    """Count live sessions (starting or running) that draw on the GPU (Weston, or Vulkan):
+    display.choose charges each a reserve for what it may still load (QA SL-2, XFA-2/XFK-2:
+    "running" is set the moment the engine process starts, before any texture is loaded)."""
+    return sum(1 for s in session.list_sessions()
+               if s.status in ("starting", "running")
+               and (s.display_server == display.WESTON or s.renderer == "vulkan"))
+
+
 def _prepare(req: LaunchRequest,
              memory_max: str | None = None) -> tuple[session.Session, bool]:
     """Validate, install the bridge, create the session, hand it its switches, copy a pilot.
@@ -1056,6 +1085,9 @@ def _prepare(req: LaunchRequest,
     section 14).
     """
     _validate(req)
+    # Before anything is installed or created: an explicit --display weston that cannot run is
+    # refused here, like every other launch option.
+    server, note = _display_for(req)
     fs2 = paths.fs2path()
     # Before new_session: bridge_install refuses a refresh while any harness scope runs, and this
     # session has no scope yet, so it never counts itself.
@@ -1063,6 +1095,7 @@ def _prepare(req: LaunchRequest,
     sess = session.new_session(kind=req.kind, binary=str(Path(req.binary).resolve()),
                                fs2path=str(fs2), mods=req.mods, mission=req.mission,
                                renderer=req.renderer, width=req.width, height=req.height,
+                               display_server=server, display_note=note,
                                switches={k: getattr(req, k) for k in _SWITCH_NAMES},
                                allow_eval=req.allow_eval, extra_args=req.extra_args,
                                cwd=req.cwd, runtime_sec=req.runtime_sec, memory_max=memory_max,
@@ -1404,6 +1437,12 @@ def _early_exit_error(sid: str, err: HarnessError) -> HarnessError:
                             f"the sandboxed engine ended before it was ready"
                             f"{': ' + reason if reason else ''}",
                             f"engine.log (the build's own output, and bwrap's): {tail}")
+    runner_error = (sess.exit_info or {}).get("error")
+    if runner_error:
+        # The runner failed before the engine ran (a display that did not start, a private
+        # network prefix that could not be built) and recorded why (QA XFA-8).
+        return HarnessError(EXIT_LAUNCH, f"the session could not start: {runner_error}",
+                            f"engine.log: {tail}")
     if any(w in tail for w in _NAMESPACE_WORDS):
         return HarnessError(EXIT_LAUNCH,
                             f"the engine could not start in its private network: {tail}",
@@ -1481,7 +1520,13 @@ def launch(req: LaunchRequest) -> dict:
     except BaseException:
         _stop_on_cancel(sess.id)
         raise
-    return {"id": sess.id, "display": sess.display, **found, "state": hb.get("state"),
+    if sess.display_note:
+        # The display choice's note (a fallback to Xvfb, unchecked or low video memory), so a slow
+        # session explains itself.
+        warnings.append(sess.display_note)
+    return {"id": sess.id, "display": sess.display, "display_server": sess.display_server,
+            "gl_renderer": sess.gl_renderer,
+            **found, "state": hb.get("state"),
             "bridge_refreshed": refreshed, "errors": hb.get("errors"),
             "last_error": hb.get("last_error"), "switches": hb.get("switches"),
             "warnings": warnings, "sound": routing, "match": sess.match,
@@ -2162,6 +2207,9 @@ def _configure_launch(p: argparse.ArgumentParser) -> None:
     p.add_argument("--mission", help="mission file, e.g. SM1-01.fs2 (skips the main hall)")
     p.add_argument("--mods", default="", help="comma-separated mod folders, e.g. MVPS-4.7.3")
     p.add_argument("--vulkan", action="store_true", help="use the Vulkan renderer")
+    p.add_argument("--display", choices=display.CHOICES, default="auto",
+                   help="virtual display: weston (GPU), xvfb (software, identical pixels) or "
+                        "auto (weston when it can run here)")
     p.add_argument("--res", default="1280x720", help="window size WxH")
     p.add_argument("--skip-movies", action="store_true")
     p.add_argument("--pilot", default="chooser", help="chooser | existing:NAME | create:NAME")
@@ -2201,7 +2249,7 @@ def _cli_launch(args: argparse.Namespace) -> dict:
     # Before a program is even looked for (QA Plan B, TA-10): with QTFRED_BIN unset the
     # editor refusal was never reached.
     _refuse_unavailable(LaunchRequest(binary="", kind=kind, sound=args.sound, match=args.match,
-                                      role=args.role, network=args.network))
+                                      role=args.role, network=args.network, display=args.display))
     req = LaunchRequest(
         binary=args.binary or _default_binary(args.qtfred), mission=args.mission,
         mods=[m for m in args.mods.split(",") if m], renderer="vulkan" if args.vulkan else "opengl",
@@ -2212,7 +2260,7 @@ def _cli_launch(args: argparse.Namespace) -> dict:
         kind=kind, runtime_sec=args.runtime,
         ready_timeout=args.ready_timeout, match=args.match, role=args.role, port=args.port,
         connect=args.connect, game_name=args.game_name, closed=args.closed,
-        network=args.network, sound=args.sound, visible=args.visible)
+        network=args.network, sound=args.sound, visible=args.visible, display=args.display)
     return launch(req)
 
 

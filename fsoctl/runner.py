@@ -1,4 +1,4 @@
-"""The process that runs INSIDE a session's scope: Xvfb, then the engine or qtFRED.
+"""The process that runs INSIDE a session's scope: the virtual display, then the engine or qtFRED.
 
 WHY a runner process: the scope's main process must outlive `fsoctl launch` (which returns as soon
 as the session is ready) and must own both Xvfb and the engine, so stopping the scope ends both.
@@ -19,10 +19,14 @@ import sys
 import time
 from pathlib import Path
 
+from . import display as display_choice
 from . import envsetup, launcher, match, sandbox, session, sound
 from .errors import EXIT_LAUNCH, HarnessError
 
 _XVFB_READY_TIMEOUT = 10.0
+_WESTON_READY_TIMEOUT = 10.0     # the same budget Xvfb gets to report its display
+_WESTON_SOCKET = "wayland-fsoh"
+_DISPLAY_STOP_TIMEOUT = 5.0      # one bound for all display processes to end before SIGKILL
 _XVFB_EXTRA_HEIGHT = 80  # room below the game window for qtFRED's status bar and dialogs
 _RUNTIME_SLACK = 5       # a SIGTERM this close to the runtime limit is the runtime limit
 # How long a terminated runner waits for the engine's own exit before SIGKILL: the same 20 s
@@ -101,6 +105,132 @@ def _start_xvfb(width: int, height: int) -> tuple[str, subprocess.Popen]:
         proc.kill()
         raise RuntimeError(f"Xvfb did not report a display within {_XVFB_READY_TIMEOUT:.0f}s")
     return f":{data.strip().decode()}", proc
+
+
+def _weston_env(rt: Path) -> dict:
+    """Return the environment Weston and Xwayland start with: the runner's own, without the
+    desktop's display, session and D-Bus addresses (QA SA-3; the engine gets the same treatment in
+    envsetup), with XDG_RUNTIME_DIR pointing at the session's own Weston folder `rt`."""
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("DISPLAY", *envsetup.DESKTOP_SESSION_VARS)}
+    env["XDG_RUNTIME_DIR"] = str(rt)
+    env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={rt / 'no-bus'}"   # a path nothing listens on
+    return env
+
+
+def _wait_for_weston_socket(weston: subprocess.Popen, socket_path: Path, log: Path) -> None:
+    """Wait (bounded) until Weston has opened its socket; raise RuntimeError naming the log if it
+    exits first or the time runs out (QA CR-4/SL-5: a Weston that dies at once used to cost the
+    whole timeout and an error that did not say where to look)."""
+    deadline = time.monotonic() + _WESTON_READY_TIMEOUT
+    while not socket_path.exists():      # bounded by the deadline and by Weston exiting
+        code = weston.poll()
+        if code is not None:
+            raise RuntimeError(f"Weston exited with code {code} before opening its socket; "
+                               f"see {log}")
+        if time.monotonic() > deadline:
+            raise RuntimeError("Weston did not open its socket within "
+                               f"{_WESTON_READY_TIMEOUT:.0f}s; see {log}")
+        time.sleep(0.05)
+
+
+def _start_weston(width: int, height: int, run: Path) -> tuple[str, list]:
+    """Start a headless Weston on the GPU with a full-screen Xwayland inside; return (":N", procs).
+
+    Receives: the game window size and the session's run folder. Returns the X display that the game
+    and the harness's X tools use exactly like an Xvfb one, and the processes in the order they must
+    be ended (Xwayland, then Weston).
+
+    WHY this shape (probe 2026-11-18, plan docs/superpowers/plans/2026-11-18-weston-display.md):
+    - Weston's default shell, not kiosk: kiosk-shell crashed twice with a full-screen X server.
+    - A full-screen ("rootful") Xwayland, not Weston's own X layer: with the rootless one the game
+      window shrank, whole-screen grabs failed and XTEST key presses never arrived.
+    - --no-config: otherwise Weston reads the user's weston.ini (and /etc/xdg/weston), which can
+      pick the kiosk shell, load modules or start programs in every session (QA SL-1).
+    - Weston gets a runtime folder of its own in the run folder (its socket lives there, and a
+      Wayland socket must sit in a 0700 folder); the engine never sees WAYLAND_DISPLAY (envsetup).
+    Weston and Xwayland are children of this runner, inside the session's scope. Anything that goes
+    wrong after Weston starts, a stop included, ends whatever was started before passing the error
+    on (QA CR-3/TA-2/SL-4): main() only ends processes this function returned.
+    """
+    rt = run / "weston-runtime"
+    rt.mkdir(mode=0o700, exist_ok=True)
+    env = _weston_env(rt)
+    total_h = height + _XVFB_EXTRA_HEIGHT
+    log = run / "weston.log"
+    weston = subprocess.Popen(["weston", "--no-config", "--backend=headless", "--renderer=gl",
+                               f"--socket={_WESTON_SOCKET}", f"--width={width}",
+                               f"--height={total_h}", "--idle-time=0", f"--log={log}"],
+                              env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    started = [weston]
+    try:
+        _wait_for_weston_socket(weston, rt / _WESTON_SOCKET, log)
+        xwayland_env = {**env, "WAYLAND_DISPLAY": _WESTON_SOCKET}
+        rfd, wfd = os.pipe()
+        try:
+            try:
+                # Xwayland's errors go nowhere, as Xvfb's always have (QA SA-4: no uncapped log).
+                xwayland = subprocess.Popen(["Xwayland", "-fullscreen", "-geometry",
+                                             f"{width}x{total_h}", "-displayfd", str(wfd),
+                                             "-nolisten", "tcp"],
+                                            env=xwayland_env, pass_fds=(wfd,),
+                                            stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
+                started.insert(0, xwayland)
+            finally:
+                os.close(wfd)
+            data = _read_display(rfd, _XVFB_READY_TIMEOUT)
+        finally:
+            os.close(rfd)       # also when Xwayland's start failed (QA XFA-7)
+        if not data.strip():
+            raise RuntimeError(f"Xwayland did not report a display within "
+                               f"{_XVFB_READY_TIMEOUT:.0f}s")
+    except BaseException:
+        for proc in started:
+            proc.kill()
+        raise
+    return f":{data.strip().decode()}", started
+
+
+def _start_display(server: str, width: int, height: int, run: Path) -> tuple[str, list]:
+    """Start the session's display (Weston with Xwayland, or Xvfb); return (":N", processes in
+    the order they are to be ended)."""
+    if server == display_choice.WESTON:
+        return _start_weston(width, height, run)
+    display, xvfb = _start_xvfb(width, height)
+    # A test stand-in may return no process object; the real _start_xvfb raises instead.
+    return display, [xvfb] if xvfb is not None else []
+
+
+def _record_display(sess: session.Session, server: str, display: str | None, procs: list,
+                    env: dict) -> None:
+    """Write the display, its processes' pids and (OpenGL with a window) the OpenGL renderer
+    string into the session record. `env` is the engine's environment: the renderer string is
+    read with it, so it describes what the engine will get (QA CR-6)."""
+    gl = (display_choice.gl_renderer(display, env)
+          if display and sess.renderer == "opengl" else None)
+
+    def mark(s: session.Session) -> None:
+        s.display = display
+        s.gl_renderer = gl
+        if server == display_choice.WESTON and procs:
+            s.xwayland_pid, s.weston_pid = (p.pid for p in procs)
+        else:
+            s.xvfb_pid = procs[0].pid if procs else None
+    session.update(sess.id, mark)
+
+
+def _stop_display(procs: list) -> None:
+    """End the display processes: Xwayland is asked first and given a moment to go before Weston is
+    asked (an X server is a client of its compositor); anything still running after the bounded
+    wait is killed, so a Weston stuck in GPU teardown cannot hold the scope (QA CR-5/SL-7)."""
+    deadline = time.monotonic() + _DISPLAY_STOP_TIMEOUT
+    for proc in procs:
+        proc.terminate()
+        try:
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
 
 def _signal_name(code: int) -> str | None:
@@ -353,10 +483,10 @@ def _fail(sid: str, error: str) -> int:
 def make_first_oom_victim() -> int:
     """Raise this process's oom_score_adj to the maximum and return the value read back.
 
-    Every child (Xvfb, the engine) inherits it, so a global out-of-memory takes the session before a
-    desktop application. Done here and not as a scope property: systemd rejects OOMScoreAdjust on a
-    transient scope ("Unknown assignment", 2026-10-16), and a process may raise its own score
-    without privilege.
+    Every child (the display, the engine) inherits it, so a global out-of-memory takes the session
+    before a desktop application. Done here and not as a scope property: systemd rejects
+    OOMScoreAdjust on a transient scope ("Unknown assignment", 2026-10-16), and a process may
+    raise its own score without privilege.
     """
     with open("/proc/self/oom_score_adj", "w", encoding="utf-8") as f:
         f.write("1000")
@@ -366,32 +496,38 @@ def make_first_oom_victim() -> int:
 
 def main(sid: str) -> int:
     """Run one session to completion; return the engine's exit code (1 on runner failure, 143
-    when the scope was ended). Xvfb is terminated on every path (QA SL-8)."""
+    when the scope was ended). The display (Xvfb, or Xwayland and Weston) is ended on every path
+    (QA SL-8)."""
     started = time.monotonic()
     signal.signal(signal.SIGTERM, _on_sigterm)
     make_first_oom_victim()
-    xvfb = None
+    display_procs = []
     try:
         sess = session.update(sid, lambda s: setattr(s, "runner_pid", os.getpid()))
         display = None
+        run = session.run_dir(sess)
+        # No choice recorded: a standalone (no window at all) or a record from before the choice
+        # existed (those ran on Xvfb).
+        server = sess.display_server or display_choice.XVFB
+        if sess.network == "sandbox" and server == display_choice.WESTON:
+            # Only Xvfb for the sandbox: Xwayland could hand a sandboxed engine a GPU device over
+            # its X socket (QA SA-1). The launcher never records this; a record that says so is
+            # refused here rather than trusted.
+            return _fail(sid, "a sandbox session cannot use the Weston display")
         if sess.role != "standalone":
             # A standalone server has no window (stand_gui-unix.cpp); it gets no display at all,
             # so a stray SDL init cannot open one anywhere.
             try:
-                display, xvfb = _start_xvfb(sess.width, sess.height)
+                display, display_procs = _start_display(server, sess.width, sess.height, run)
             except (OSError, RuntimeError) as e:
-                return _fail(sid, f"xvfb: {e}")
-        xvfb_pid = xvfb.pid if xvfb else None
-
-        def mark_display(s: session.Session) -> None:
-            s.display, s.xvfb_pid = display, xvfb_pid
-        session.update(sid, mark_display)
-        run = session.run_dir(sess)
+                return _fail(sid, f"{server}: {e}")
         (run / "home").mkdir(exist_ok=True)
         (run / "xdg-runtime").mkdir(mode=0o700, exist_ok=True)   # XDG requires 0700
-        env = envsetup.for_kind(envsetup.child_env(dict(os.environ), display,
-                                                   session.prefs_dir(sess), sess.renderer, run),
-                                sess.kind)
+        env = display_choice.gl_env(
+            envsetup.for_kind(envsetup.child_env(dict(os.environ), display,
+                                                 session.prefs_dir(sess), sess.renderer, run),
+                              sess.kind), server)
+        _record_display(sess, server, display, display_procs, env)
         if sess.sound:
             env.update(sound.engine_env(sess.id))
         if sess.network == "sandbox":
@@ -415,8 +551,7 @@ def main(sid: str) -> int:
         return 143
     finally:
         _block_sigterm()
-        if xvfb is not None:
-            xvfb.terminate()
+        _stop_display(display_procs)
 
 
 if __name__ == "__main__":

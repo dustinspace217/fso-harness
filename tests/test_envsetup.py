@@ -78,3 +78,4 @@ def test_qtfred_gets_no_sdl_signal_handlers_and_the_game_keeps_them():
     inherited = {**_BASE, "SDL_NO_SIGNAL_HANDLERS": "1"}
     g2 = for_kind(child_env(inherited, ":93", Path("/p"), "opengl", Path("/r")), "game")
     assert "SDL_NO_SIGNAL_HANDLERS" not in g2
+

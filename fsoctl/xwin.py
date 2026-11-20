@@ -37,4 +37,5 @@ def main_window(display: str, pid: int, kind: str, mission: str | None) -> str |
     if kind != "qtfred":
         return wins[0][0] if wins else None
     want = editor_title(mission)
-    return next((w for w, title in wins if title == want), None)
+    # qtFRED's title is "<file>[*]": Qt shows a trailing "*" while the mission has unsaved changes
+    return next((w for w, title in wins if title in (want, want + "*")), None)

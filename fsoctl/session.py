@@ -57,6 +57,16 @@ class Session:
     # same reason as runner_start (launcher._gone asks about both). None on Linux.
     engine_start: int | None = None
     xvfb_pid: int | None = None
+    # Which virtual display the session draws into (fsoctl.display: "weston" or "xvfb"), chosen at
+    # launch; None in records written before the choice existed (they ran on Xvfb). display_note
+    # says why an automatic choice fell back to Xvfb. Weston sessions record both of their pids.
+    display_server: str | None = None
+    display_note: str | None = None
+    weston_pid: int | None = None
+    xwayland_pid: int | None = None
+    # The OpenGL renderer string the session's display gives (display.gl_renderer), e.g. the
+    # GPU's name or "llvmpipe" (software). None when not read: Vulkan, no window, no glxinfo.
+    gl_renderer: str | None = None
     created: float = field(default_factory=time.time)
     status: str = "starting"
     exit_info: dict | None = None

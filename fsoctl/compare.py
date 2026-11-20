@@ -132,7 +132,11 @@ def diff_images(a_path: str, b_path: str, out_path: str) -> dict:
 
 def _run_once(binary: str, launch: dict, steps: list, renderer: str) -> dict:
     """Launch, run the scenario, stop; return {"id", "renderer", "snapshots"}."""
-    fields = {**_RUN_DEFAULTS, **launch, "binary": binary, "renderer": renderer}
+    # Linux: both runs on Xvfb unless the caller says otherwise, so a difference is the builds'
+    # or renderers', not GPU against software; "auto" could pick Weston for one run and Xvfb for
+    # the next (QA CR-1). Elsewhere there is no display to choose (XFA-1/XFK-1).
+    pinned = {"display": "xvfb"} if platform.NAME == "linux" else {}
+    fields = {**_RUN_DEFAULTS, **pinned, **launch, "binary": binary, "renderer": renderer}
     try:
         req = LaunchRequest(**fields)
     except TypeError as e:
@@ -142,7 +146,8 @@ def _run_once(binary: str, launch: dict, steps: list, renderer: str) -> dict:
         snaps = scenario.run(r["id"], steps)
     finally:
         launcher.stop(r["id"])
-    return {"id": r["id"], "renderer": r["renderer"], "snapshots": snaps}
+    return {"id": r["id"], "renderer": r["renderer"], "display_server": r.get("display_server"),
+            "snapshots": snaps}
 
 
 # metres of position, hull percentage points, image mean absolute error (0..1)
@@ -182,6 +187,10 @@ def _verdict(a: dict, b: dict, snaps: dict, tol: dict) -> dict:
     only_a = sorted(a["snapshots"].keys() - b["snapshots"].keys())
     only_b = sorted(b["snapshots"].keys() - a["snapshots"].keys())
     why: list[str] = []
+    if a.get("display_server") != b.get("display_server"):
+        # GPU (Weston) and software (Xvfb) pixels differ for the same build (QA CR-1).
+        why.append(f"the runs used different displays (a: {a.get('display_server')}, b: "
+                   f"{b.get('display_server')}); give both the same --display")
     if not snaps:
         why.append("no snapshot was taken by both runs; add a snapshot step")
     if only_a or only_b:
@@ -228,8 +237,14 @@ def renderer_compare(binary: str, launch: dict, steps: list, tol: dict | None = 
     a = _run_once(binary, launch, steps, "opengl")
     b = _run_once(binary, launch, steps, "vulkan")
     snaps = _diff_runs(a, b, tol)
-    return {"opengl": a["id"], "vulkan": b["id"], "renderers": [a["renderer"], b["renderer"]],
-            "snapshots": snaps}
+    displays = [a.get("display_server"), b.get("display_server")]
+    out = {"opengl": a["id"], "vulkan": b["id"], "renderers": [a["renderer"], b["renderer"]],
+           "displays": displays, "snapshots": snaps}
+    if displays[0] != displays[1]:
+        # QA XFA-6: a GPU-versus-software difference must not read as a renderer difference.
+        out["warnings"] = [f"the runs used different displays (opengl: {displays[0]}, vulkan: "
+                           f"{displays[1]}); give both the same --display"]
+    return out
 
 
 def _json_arg(text: str, what: str):

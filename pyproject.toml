@@ -31,6 +31,16 @@ source_paths = ["fsoctl"]
 # means delete mutants/ and rerun (QA sound MU-8, 2026-10-15).
 also_copy = ["docs/research", "docs/AGENT-GUIDE.md", "examples", "mcp/server.py", "pytest.ini",
              "probes"]
+# This test starts the real runner with `python -P` from a temporary folder; inside mutants/ the
+# trampolined package cannot find mutmut's config from there, so it fails the baseline (Weston QA
+# 2026-11-20). It guards the runner's start, not mutated logic; it runs in the normal unit tier.
+# test_platform_parity compares the Linux and Windows modules' signatures, which mutmut's
+# trampolines change, and test_text_encoding reads the source's syntax tree, which in mutants/ is
+# mutmut's generated code; neither has mutated logic to judge.
+pytest_add_cli_args = ["--deselect",
+                       "tests/test_launcher_unit.py::test_the_runner_never_loads_code_from_the_folder_fsoctl_was_typed_in",
+                       "--deselect", "tests/test_platform_parity.py",
+                       "--deselect", "tests/test_text_encoding.py"]
 # Mutants of safefs's tree remover that turn a folder handle into None act on the WORKING
 # folder, which is mutants/ (os.scandir(None) lists ".", dir_fd=None resolves names against
 # "."): five exist (clear_tree 5 and 10, remove_tree 6 and 12, _empty 22 on 2026-11-13), and

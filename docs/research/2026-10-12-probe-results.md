@@ -559,3 +559,20 @@ Source references are to the 26.2.0 tree.
 - **The `lua` pre-check works on Windows once `api_docs` has run for the build**: the call
   that ended the engine in the first crash test (`ba.noSuchFunctionAtAll()`) was refused
   before sending on 2026-11-17. The bracket form the refusal names still reaches the engine.
+
+## 24. Weston display (2026-11-18 probe, 2026-11-20 implementation; RTX 5080, NVIDIA 615.78.08)
+- Working shape: `weston --backend=headless --renderer=gl --socket=<name> --width W
+  --height H --idle-time=0` (default shell) with `Xwayland -fullscreen -geometry WxH -displayfd`
+  inside it. Game, screenshots (`import`), and xdotool XTEST input behave as under Xvfb.
+- Kiosk shell + full-screen Xwayland: Weston crashed (kiosk-shell.so,
+  `kiosk_shell_output_set_active_surface_tree`, two core dumps). Weston's own rootless X layer:
+  the game window shrank to 1242x629, whole-screen grabs failed, XTEST keys never arrived.
+- Frame rate, retail SM1-01, Release build of master: 60 fps (911 frames in 15 s, mean 16.7 ms,
+  p99 17.2 ms) on Weston; the probe measured 15-52 fps on Xvfb.
+- NVIDIA's OpenGL maps `libGLX_nvidia.so` and `libnvidia-glcore.so`, not `libnvidia-glvkspirv.so`;
+  a Vulkan run on NVIDIA maps `libGLX_nvidia.so` as well, so the library check reads Vulkan first.
+  `glxinfo -B` on the session's display gives the renderer string (GPU name vs `llvmpipe`).
+- Video memory per Weston session, retail SM1-01: about 314 MiB (1, 2, 3 sessions: +314, +627,
+  +941 MiB; all returned at stop).
+- Engine tier 68 of 69, qtFRED tier 7 of 7, Vulkan tier 1 of 1 with Weston the default; the one
+  failure (the sandbox seeing /home) fails the same way on main.

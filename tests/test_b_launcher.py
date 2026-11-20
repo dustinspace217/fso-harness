@@ -762,3 +762,18 @@ def test_stop_without_a_session_folder_reports_runner_first(tmp_runtime, scopes)
     shutil.rmtree(session.run_dir(s))
     assert launcher.stop(s.id)["runner_first"].startswith("skipped:")
 
+
+
+def test_launch_records_and_reports_the_display_choice(tmp_runtime, fs2, scopes, monkeypatch):
+    # QA TA-4: nothing checked that the choice reached the record and the launch result.
+    hb = {"state": "GS_STATE_MAIN_MENU", "errors": 0, "last_error": None, "switches": {}}
+    monkeypatch.setattr(channel.Channel, "wait_ready", lambda self, timeout, alive: hb)
+    monkeypatch.setattr(launcher.display, "choose",
+                        lambda *a: ("xvfb", "Xvfb (software OpenGL): weston not installed"))
+    r = launcher.launch(LaunchRequest(binary="/bin/true"))
+    assert r["display_server"] == "xvfb"
+    assert "Xvfb (software OpenGL): weston not installed" in r["warnings"]
+    assert "gl_renderer" in r
+    sess = session.load(r["id"])
+    assert (sess.display_server, sess.display_note) == (
+        "xvfb", "Xvfb (software OpenGL): weston not installed")

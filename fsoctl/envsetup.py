@@ -30,7 +30,7 @@ between runs instead of being rebuilt in every run folder.
 """
 from pathlib import Path
 
-_DESKTOP_SESSION_VARS = ("WAYLAND_DISPLAY", "SESSION_MANAGER", "XAUTHORITY",
+DESKTOP_SESSION_VARS = ("WAYLAND_DISPLAY", "SESSION_MANAGER", "XAUTHORITY",
                          "XDG_CURRENT_DESKTOP", "KDE_FULL_SESSION", "DESKTOP_SESSION",
                          "XDG_SESSION_DESKTOP")
 
@@ -38,7 +38,8 @@ _DESKTOP_SESSION_VARS = ("WAYLAND_DISPLAY", "SESSION_MANAGER", "XAUTHORITY",
 def child_env(base: dict, display: str | None, prefs: Path, renderer: str, run: Path) -> dict:
     """Return a copy of `base` set up for a headless FSO/qtFRED child process.
 
-    Receives: base (the caller's environment; not modified), display (":N" from Xvfb), prefs (the
+    Receives: base (the caller's environment; not modified), display (":N", the session's
+    virtual display), prefs (the
     session's FSO_PREFERENCES_PATH folder), renderer ("opengl" | "vulkan"), run (the session's
     run folder; the runner creates run/home and run/xdg-runtime, and never creates run/no-bus).
     The real home, for the shared cache, is read from base["HOME"].
@@ -46,7 +47,7 @@ def child_env(base: dict, display: str | None, prefs: Path, renderer: str, run: 
     home = run / "home"
     env = dict(base)
     real_home = Path(base.get("HOME") or Path.home())
-    for var in _DESKTOP_SESSION_VARS:
+    for var in DESKTOP_SESSION_VARS:
         env.pop(var, None)
     env.update({
         "DISPLAY": display,

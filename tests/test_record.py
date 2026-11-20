@@ -110,3 +110,14 @@ def test_launch_request_carries_the_network_mode(tmp_runtime):
     assert record.launch_request_for(s2).network == "real"
     s2.network = "private"
     assert record.launch_request_for(s2).network == "private"
+
+
+def test_replay_keeps_the_display(tmp_runtime, monkeypatch):
+    # QA XFK-4: replay rebuilt the request with display "auto", so an Xvfb recording could replay
+    # on Weston (other pixels, other timing) and the reverse.
+    assert record.launch_request_for(_s(display_server="weston")).display == "weston"
+    assert record.launch_request_for(_s(display_server="xvfb")).display == "xvfb"
+    monkeypatch.setattr(record.platform, "NAME", "linux")
+    assert record.launch_request_for(_s()).display == "xvfb"      # from before the choice
+    monkeypatch.setattr(record.platform, "NAME", "windows")
+    assert record.launch_request_for(_s()).display == "auto"

@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import paths, session, shadowdir
+from . import paths, platform, session, shadowdir
 from .cli import register
 from .errors import (
     EXIT_BRIDGE,
@@ -143,7 +143,10 @@ def launch_request_for(sess: session.Session, binary: str | None = None,
         extra_args=list(sess.extra_args), kind=sess.kind, cwd=_replay_cwd(sess),
         # A record with no network field predates it: its engine ran on the real network, which
         # is also today's default (plan A QA CR-5/TA-10).
-        network=sess.network or "real")
+        network=sess.network or "real",
+        # The same display, so a replay draws the way the recording did (QA XFK-4). A Linux
+        # record without one predates the choice and ran on Xvfb; other systems have no choice.
+        display=sess.display_server or ("xvfb" if platform.NAME == "linux" else "auto"))
 
 
 def _replay_cwd(sess: session.Session) -> str | None:

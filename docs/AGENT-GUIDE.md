@@ -201,8 +201,9 @@ runs the same scenario on two builds side by side (write the steps as a scenario
      - **`checkRayCollision(from, to)` casts THROUGH `to` to infinity** (MC_CHECK_RAY,
        model.h:1370). Check the hit's distance yourself or a ship far along the nose line reads
        as "about to hit".
-   - **Frame rate:** the software renderer runs about 20-35 fps (it varies with machine load;
-     record it per run), and a controller acts once per frame. Time compression divides its
+   - **Frame rate:** on Weston (the launch result's `display_server`) about 60 fps; the
+     software renderer (Xvfb) about 20-35 fps, varying with machine load. Record it per run;
+     a controller acts once per frame. Time compression divides its
      control rate by the same factor, so keep compression at 100 while it flies.
    - **Missile lock is not exposed to Lua.** After firing, check that your missile's `HomingObject`
      is set. **Hull distance:** `ship:checkRayCollision(from, to)` returns the hit point; a capital

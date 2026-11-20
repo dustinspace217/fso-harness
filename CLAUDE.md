@@ -49,6 +49,13 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
   Python side and the bridge check; Python audits.
 - **No vendor defaults:** `VK_ICD_FILENAMES` only if the caller sets it.
 - Everything runs in a named scope with caps; every wait is bounded.
+- **Display: headless Weston (default shell) + a FULL-SCREEN Xwayland** when weston, Xwayland and
+  a GPU render node exist; Xvfb otherwise, for the sandbox, and on `--display xvfb`
+  (fsoctl/display.py; plan docs/superpowers/plans/2026-11-18-weston-display.md). Probed
+  2026-11-18: Weston's kiosk shell crashed with a full-screen X server, and its own (rootless) X
+  layer shrank the window, broke whole-screen grabs and lost XTEST keys. Software OpenGL
+  (`LIBGL_ALWAYS_SOFTWARE`) only on Xvfb (display.gl_env). GPU sessions share video memory with
+  the desktop: display.choose reads it before choosing Weston (2026-10-15 black-desktop incident).
 - **Sexp text built from caller input** (found by QA, confirmed on the engine 2026-10-12): FSO turns
   `!` into `"` and `"` is the real delimiter, so a name with `"` escapes its quotes and anything in
   a delay slot is evaluated. Names are checked to exist and refused if they contain `" ! ( )`; every
@@ -241,7 +248,8 @@ Authoritative documents: spec `docs/superpowers/specs/2026-10-12-fso-harness-des
   renderer ~8 cores. `FSO_HARNESS_MAX_SESSIONS` caps them (default 3).
 
 ## Etiquette
-- Engine tests always via `bounded-run`; sessions never touch the user's desktop (Xvfb only).
+- Engine tests always via `bounded-run`; sessions never touch the user's desktop (Weston or
+  Xvfb, never the desktop).
 - New engine behaviour goes into the probe-results doc with its source reference.
 - This repo keeps the Claude co-author trailer; anything sent to FSO upstream carries no
   Claude trailer, and Dustin approves every upstream post (except bug issues: the FSO

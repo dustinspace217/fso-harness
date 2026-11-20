@@ -46,3 +46,20 @@ REAL_OPENGL = "\n".join("7f00-7f01 r-xp 0 08:01 1 " + p for p in (
 def test_classify_real_captures():
     assert classify(REAL_VULKAN)["renderer"] == "vulkan"
     assert classify(REAL_OPENGL)["renderer"] == "opengl"
+
+
+NV_GL_MAPS = """7f00-7f01 r-xp 0 08:01 1 /usr/lib64/libGLX_nvidia.so.615.78.08
+7f02-7f03 r-xp 0 08:01 2 /usr/lib64/libnvidia-glcore.so.615.78.08
+"""
+
+
+def test_classify_nvidia_opengl():
+    # NVIDIA's own OpenGL (a session on Weston): no Mesa GL and no Vulkan driver.
+    r = classify(NV_GL_MAPS)
+    assert r["renderer"] == "opengl"
+    assert "libGLX_nvidia.so" in r["libraries"]
+
+
+def test_classify_nvidia_vulkan_still_wins_over_its_glx():
+    # A Vulkan run on NVIDIA maps libGLX_nvidia too, so Vulkan is decided first.
+    assert classify(VK_MAPS + NV_GL_MAPS)["renderer"] == "vulkan"

@@ -66,6 +66,8 @@ def test_mismatched_snapshot_labels_are_not_identical(fake_runs):
     r = _compare()
     assert r["identical_within_tolerance"] is False
     assert r["only_in_a"] == ["u"] and r["only_in_b"] == []
+    assert r["states_identical"] is False
+    assert any(x.startswith("snapshot labels differ") for x in r["not_identical_because"])
 
 
 @pytest.mark.parametrize("key", ["goals", "events"])
@@ -78,6 +80,7 @@ def test_goal_or_event_in_one_run_only_is_a_difference(fake_runs, key):
     assert r["identical_within_tolerance"] is False and r["states_identical"] is False
     kind = "goal" if key == "goals" else "event"
     assert {"kind": "only_in_a", "of": kind, "name": "Y"} in r["snapshots"]["t"]["state_diffs"]
+    assert "t: 1 state difference(s)" in r["not_identical_because"]
 
 
 def test_truncated_ship_list_is_not_identical(fake_runs):
@@ -168,3 +171,57 @@ def test_on_windows_imagemagick_is_started_by_the_full_path_it_was_found_at(monk
     monkeypatch.setattr(compare.platform, "NAME", "linux")
     compare.diff_images("a.png", "b.png", "d.png")
     assert seen[1][0] == "magick"                       # the plain name, as before
+
+
+def test_runs_on_different_displays_are_not_identical():
+    # QA CR-1: Weston (GPU) and Xvfb (software) pixels differ for the same build, so a pair of
+    # runs that landed on different displays must not read as a build difference or a match.
+    a = {**_run("sa000000", t=_state()), "display_server": "weston"}
+    b = {**_run("sb000000", t=_state()), "display_server": "xvfb"}
+    r = compare._verdict(a, b, {}, compare._DEFAULT_TOL)
+    assert any("different displays (a: weston, b: xvfb)" in x for x in r["not_identical_because"])
+    same = compare._verdict(a, {**b, "display_server": "weston"}, {}, compare._DEFAULT_TOL)
+    assert not any("different displays" in x for x in same["not_identical_because"])
+
+
+def test_compare_runs_default_to_xvfb(monkeypatch):
+    seen = []
+    monkeypatch.setattr(compare.launcher, "launch",
+                        lambda req: seen.append(req.display) or {"id": "s1", "renderer": "opengl",
+                                                                 "display_server": "xvfb"})
+    monkeypatch.setattr(compare.scenario, "run", lambda sid, steps: {"t": "snap"})
+    monkeypatch.setattr(compare.launcher, "stop", lambda sid: None)
+    assert compare._run_once("/a", {}, [], "opengl") == {
+        "id": "s1", "renderer": "opengl", "display_server": "xvfb", "snapshots": {"t": "snap"}}
+    compare._run_once("/a", {"display": "auto"}, [], "opengl")
+    monkeypatch.setattr(compare.platform, "NAME", "windows")     # QA XFA-1/XFK-1
+    compare._run_once("/a", {}, [], "opengl")
+    assert seen == ["xvfb", "auto", "auto"]
+
+
+def test_renderer_compare_reports_different_displays(fake_runs):
+    # QA XFA-6: renderer_compare never read the displays.
+    fake_runs({"t": _state()}, {"t": _state()})
+    r = compare.renderer_compare("/a", {}, [{"snapshot": "t"}])
+    assert r["displays"] == [None, None] and "warnings" not in r
+
+
+
+def test_renderer_compare_warns_when_the_displays_differ(tmp_runtime, monkeypatch):
+    sb = session.new_session(kind="game", binary="/bin/true", fs2path="/tmp", mods=[],
+                             mission=None, renderer="vulkan", width=1, height=1, switches={},
+                             allow_eval=False, extra_args=[])
+    runs = [{**_run("sa000000", t=_state()), "display_server": "xvfb"},
+            {**_run(sb.id, t=_state()), "display_server": "weston"}]
+    calls = []
+    monkeypatch.setattr(compare, "_run_once", lambda *a: calls.append(a) or runs.pop(0))
+    monkeypatch.setattr(compare.programs, "find", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(compare, "diff_images", lambda a, b, out: {"mean_abs_diff": 0.0,
+                                                                   "diff_image": out})
+    steps = [{"snapshot": "t"}]
+    r = compare.renderer_compare("/a", {"mods": "M"}, steps)
+    assert r["warnings"] == ["the runs used different displays (opengl: xvfb, vulkan: weston); "
+                             "give both the same --display"]
+    assert calls == [("/a", {"mods": "M"}, steps, "opengl"), ("/a", {"mods": "M"}, steps, "vulkan")]
+    assert (r["opengl"], r["vulkan"], r["renderers"]) == ("sa000000", sb.id, ["opengl", "opengl"])
+    assert r["displays"] == ["xvfb", "weston"] and set(r["snapshots"]) == {"t"}
